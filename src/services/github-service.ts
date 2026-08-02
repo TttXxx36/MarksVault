@@ -12,6 +12,47 @@ export class GitHubApiError extends Error {
   }
 }
 
+/**
+ * 可重试错误的分类
+ * 用于结构化识别临时性失败（网络、限流、服务端错误），取代按错误消息字符串匹配的判定
+ */
+export enum RetryableErrorCategory {
+  NETWORK = 'network',       // 网络层失败（断网、DNS解析失败等）
+  RATE_LIMIT = 'rate_limit', // 限流（HTTP 429）
+  SERVER = 'server',         // 服务端错误（HTTP 5xx）
+}
+
+/**
+ * 可重试错误
+ * 明确标记为临时性失败：可在执行租约有效期内重试
+ */
+export class RetryableError extends Error {
+  public readonly category: RetryableErrorCategory;
+
+  constructor(category: RetryableErrorCategory, message: string) {
+    super(message);
+    this.name = 'RetryableError';
+    this.category = category;
+  }
+}
+
+/**
+ * 结构化判定错误是否为可重试的临时性失败（网络、限流、服务端错误）
+ * 重试判定仅依赖错误类型与状态码，不匹配错误消息字符串
+ * @param error 错误对象
+ * @returns 是否可重试
+ */
+export function isRetryableGitHubError(error: unknown): boolean {
+  if (error instanceof RetryableError) {
+    return true;
+  }
+  if (error instanceof GitHubApiError) {
+    // 429 限流、5xx 服务端错误为临时性失败；其余（如 401 凭据错误）不可重试
+    return error.status === 429 || error.status >= 500;
+  }
+  return false;
+}
+
 export class GitHubService {
   private static instance: GitHubService;
   private baseUrl = 'https://api.github.com';
@@ -32,20 +73,13 @@ export class GitHubService {
     const headers = this.getAuthHeaders(credentials);
     
     try {
-      const response = await fetch(`${this.baseUrl}/user`, {
+      const response = await this.fetchWithRetryClassification(`${this.baseUrl}/user`, {
         method: 'GET',
         headers
-      });
+      }, 'GitHub凭据验证');
       
       if (!response.ok) {
-        let errorData: unknown = undefined;
-        try {
-          errorData = await response.json();
-        } catch {
-          // ignore
-        }
-
-        throw new GitHubApiError(response.status, `GitHub API error: ${response.status}`, errorData);
+        await this.throwForErrorResponse(response, 'GitHub凭据验证');
       }
       
       const userData = await response.json();
@@ -64,6 +98,50 @@ export class GitHubService {
     headers.append('Accept', 'application/vnd.github.v3+json');
     headers.append('Authorization', `token ${credentials.token}`);
     return headers;
+  }
+
+  /**
+   * 统一 fetch 包装：网络层失败（浏览器 fetch 抛 TypeError，如 "Failed to fetch"）
+   * 包装为结构化 RetryableError，供调用方按类型判定可重试性
+   * @param url 请求地址
+   * @param init 请求参数
+   * @param context 操作上下文（用于错误消息）
+   * @returns 响应对象
+   */
+  private async fetchWithRetryClassification(url: string, init: RequestInit | undefined, context: string): Promise<Response> {
+    try {
+      return await fetch(url, init);
+    } catch (error) {
+      if (error instanceof TypeError) {
+        throw new RetryableError(RetryableErrorCategory.NETWORK, `${context}网络错误: ${error.message}`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * 统一 HTTP 错误分类：限流（429）与服务端错误（5xx）为可重试的临时性失败，
+   * 其余状态码为不可重试的 API 错误（如 401 凭据错误、404 资源不存在）
+   * @param response 非 ok 的响应对象
+   * @param context 操作上下文（用于错误消息）
+   * @param errorData 已解析的响应体（可选，避免重复解析）
+   */
+  private async throwForErrorResponse(response: Response, context: string, errorData?: unknown): Promise<never> {
+    if (errorData === undefined) {
+      try {
+        errorData = await response.json();
+      } catch {
+        // 响应体可能不是 JSON，忽略
+      }
+    }
+    const message = `${context}失败: ${response.status}${errorData !== undefined ? ` - ${JSON.stringify(errorData)}` : ''}`;
+    if (response.status === 429 || response.status >= 500) {
+      throw new RetryableError(
+        response.status === 429 ? RetryableErrorCategory.RATE_LIMIT : RetryableErrorCategory.SERVER,
+        message
+      );
+    }
+    throw new GitHubApiError(response.status, message, errorData);
   }
 
   /**
@@ -103,15 +181,14 @@ export class GitHubService {
     }
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'PUT',
         headers,
         body: JSON.stringify(body)
-      });
+      }, '创建或更新文件');
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`GitHub API error: ${response.status} - ${JSON.stringify(errorData)}`);
+        await this.throwForErrorResponse(response, '创建或更新文件');
       }
       
       return await response.json();
@@ -139,18 +216,17 @@ export class GitHubService {
     const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}`;
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'GET',
         headers
-      });
+      }, '获取文件内容');
       
       if (!response.ok) {
         // 处理404特殊情况（文件不存在）
         if (response.status === 404) {
           throw new Error('File not found');
         }
-        const errorData = await response.json();
-        throw new Error(`GitHub API error: ${response.status} - ${JSON.stringify(errorData)}`);
+        await this.throwForErrorResponse(response, '获取文件内容');
       }
       
       const data = await response.json();
@@ -191,15 +267,28 @@ export class GitHubService {
     const url = `${this.baseUrl}/repos/${owner}/${repo}`;
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'GET',
         headers
-      });
+      }, '检查仓库是否存在');
       
-      return response.ok;
-    } catch (error) {
-      console.error('Checking repo existence failed:', error);
+      if (response.ok) {
+        return true;
+      }
+      
+      // 404 表示仓库确实不存在
+      if (response.status === 404) {
+        return false;
+      }
+      
+      // 其余非 ok（429/5xx 等）抛出结构化错误，交由调用方按类型判定可重试性
+      await this.throwForErrorResponse(response, '检查仓库是否存在');
       return false;
+    } catch (error) {
+      // 网络错误已由 fetchWithRetryClassification 包装为 RetryableError(NETWORK)，
+      // 此处不再吞掉错误返回 false（避免误判为仓库不存在而白调 createRepo），而是向上抛出
+      console.error('Checking repo existence failed:', error);
+      throw error;
     }
   }
 
@@ -226,11 +315,11 @@ export class GitHubService {
     };
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'POST',
         headers,
         body: JSON.stringify(body)
-      });
+      }, '创建仓库');
       
       if (!response.ok) {
         const errorData = await response.json();
@@ -268,7 +357,7 @@ export class GitHubService {
           }
         }
         
-        throw new Error(`创建仓库失败: ${response.status} - ${JSON.stringify(errorData)}`);
+        await this.throwForErrorResponse(response, '创建仓库', errorData);
       }
       
       return await response.json();
@@ -302,14 +391,13 @@ export class GitHubService {
     const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}?timestamp=${timestamp}`;
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'GET',
         headers
-      });
+      }, '获取仓库文件列表');
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`GitHub API error: ${response.status} - ${JSON.stringify(errorData)}`);
+        await this.throwForErrorResponse(response, '获取仓库文件列表');
       }
       
       const data = await response.json();
@@ -351,15 +439,14 @@ export class GitHubService {
     };
     
     try {
-      const response = await fetch(url, {
+      const response = await this.fetchWithRetryClassification(url, {
         method: 'DELETE',
         headers,
         body: JSON.stringify(body)
-      });
+      }, '删除文件');
       
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`GitHub API error: ${response.status} - ${JSON.stringify(errorData)}`);
+        await this.throwForErrorResponse(response, '删除文件');
       }
       
       return await response.json();

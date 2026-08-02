@@ -142,13 +142,40 @@ export interface OrganizeAction extends BaseAction {
 // 操作联合类型
 export type Action = BackupAction | OrganizeAction | PushAction | SelectivePushAction;
 
+/**
+ * 执行来源类型
+ * 说明一次任务执行由用户明确发起(manual)还是由事件自动触发(event)。
+ * 执行来源属于本次执行，不由任务配置的触发条件推断。
+ */
+export type ExecutionSource = 'manual' | 'event';
+
+/**
+ * 执行结果类型
+ * 一次任务执行的最终结果分类：执行成功、执行失败、执行中断或结果不确定。
+ * - 执行中断：任务执行因扩展后台终止而停止，无法继续原执行尝试，不会自动续跑
+ * - 结果不确定：系统无法确认任务操作是否完成（通常发生在超时或执行中断后仍可能
+ *   存在外部副作用时），结果不确定不得自动重试
+ * success 字段保留用于兼容判断：outcome 缺省时按 success 推断（success=true → success，
+ * 否则 → failure），旧记录与动作执行器返回的旧格式结果均可正常处理。
+ */
+export enum ExecutionOutcome {
+  SUCCESS = 'success',          // 执行成功
+  FAILURE = 'failure',          // 执行失败
+  INTERRUPTED = 'interrupted',  // 执行中断（扩展后台终止）
+  UNCERTAIN = 'uncertain',      // 结果不确定（无法确认操作是否完成）
+}
+
 // 任务执行结果接口
 export interface TaskExecutionResult {
-  success: boolean;         // 执行是否成功
+  success: boolean;         // 执行是否成功（兼容判断：outcome 缺省时据此推断）
   timestamp: number;        // 执行时间戳
+  outcome?: ExecutionOutcome; // 执行结果类型；缺省时按 success 推断（兼容旧记录）
+  retryable?: boolean;      // 结构化可重试性标记：失败结果显式标记为临时性失败（网络、限流等）时可重试，
+                            // 重试判定仅依据此字段，不匹配错误消息字符串；缺省视为不可重试
   duration?: number;        // 执行持续时间（毫秒）
   details?: string;         // 执行详情
   error?: string;           // 错误信息（如果失败）
+  source?: ExecutionSource; // 执行来源（本次执行由用户明确发起还是事件自动触发）
 }
 
 // 任务执行历史记录接口
@@ -296,6 +323,19 @@ export const createSelectivePushAction = (
 export interface TaskStorage {
   tasks: { [taskId: string]: Task }; // 任务ID到任务对象的映射
   lastUpdated: number;               // 最后更新时间戳
+}
+
+/**
+ * 任务快照
+ * 任务执行开始时固定下来的任务定义（含执行输入，如恢复文件或选中的书签）。
+ * 任务后续被编辑或删除，不会改变已开始的任务执行。
+ * 快照持久化在 storage.local 中，SW 中断后仍可读取以恢复判定。
+ */
+export interface TaskSnapshot {
+  taskId: string;           // 原始任务ID
+  task: Task;               // 执行开始时的任务定义（含执行输入）
+  source: ExecutionSource;  // 本次执行的来源
+  createdAt: number;        // 快照创建时间戳
 }
 
 // 创建默认任务存储

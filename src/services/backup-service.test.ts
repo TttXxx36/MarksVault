@@ -10,6 +10,10 @@ jest.mock('./github-service', () => ({
     getRepositoryFiles: jest.fn(),
     getFileContent: jest.fn(),
   },
+  // 测试中的错误均为普通错误（配置/文件错误），结构化判定返回不可重试
+  isRetryableGitHubError: jest.fn(() => false),
+  GitHubApiError: class extends Error {},
+  RetryableError: class extends Error {},
 }));
 
 jest.mock('../utils/storage-service', () => ({

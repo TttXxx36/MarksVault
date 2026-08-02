@@ -35,6 +35,8 @@ export interface BackupResult {
   error?: string;
   /** 时间戳 */
   timestamp?: number;
+  /** 结构化可重试性标记：失败是否属于临时性失败（网络、限流等），重试判定仅依据此字段 */
+  retryable?: boolean;
 }
 
 /**

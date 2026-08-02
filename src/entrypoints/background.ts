@@ -196,7 +196,8 @@ export default defineBackground({
           };
 
           // 使用 executeTaskWithData 执行，直接传入包含 selections 的任务对象
-          const result = await taskExecutor.executeTaskWithData(taskWithSelections);
+          // 用户从 UI 明确发起，执行来源为 manual
+          const result = await taskExecutor.executeTaskWithData(taskWithSelections, 0, 'manual');
 
           if (result.success) return { success: true };
 
@@ -212,7 +213,10 @@ export default defineBackground({
       if (message.type === 'WARMUP_BOOKMARK_FAVICONS') {
         void (async () => {
           // 该操作不依赖任务系统，但仍尽量在服务就绪后执行，以保持后台行为一致
-          await ensureServicesInitializedOrLog('runtime.onMessage:WARMUP_BOOKMARK_FAVICONS');
+          const ready = await ensureServicesInitializedOrLog('runtime.onMessage:WARMUP_BOOKMARK_FAVICONS');
+          if (!ready) {
+            return { success: false, error: '扩展服务尚未就绪，请稍后重试' };
+          }
 
           const scope = message?.payload?.scope as unknown;
           const scopeValue = scope === 'all' ? 'all' : 'bookmark_bar';

@@ -1,9 +1,10 @@
 import {
-  Task,
-  TaskStatus,
-  TaskStorage,
-  TaskExecutionResult,
-  createDefaultTask,
+    Task,
+    TaskStatus,
+    TaskStorage,
+    TaskExecutionResult,
+    ExecutionOutcome,
+    createDefaultTask,
   createDefaultTaskStorage,
   TriggerType,
   createManualTrigger,
@@ -606,20 +607,30 @@ class TaskService {
         ...task.history.executions.slice(0, MAX_HISTORY_ITEMS - 1)
       ];
 
+      // 确定结果类型：显式 outcome 优先，否则按 success 推断（兼容旧记录与旧格式结果）
+      const outcome = executionResult.outcome ?? (
+        executionResult.success ? ExecutionOutcome.SUCCESS : ExecutionOutcome.FAILURE
+      );
+
       // 确定任务状态
       let newStatus = task.status;
 
-      if (executionResult.success) {
+      if (outcome === ExecutionOutcome.SUCCESS) {
         // 成功执行的情况，回到启用状态
         newStatus = TaskStatus.ENABLED;
         console.log(`任务 ${taskId} 执行成功，状态更新为 ENABLED`);
+      } else if (outcome === ExecutionOutcome.UNCERTAIN) {
+        // 结果不确定：系统无法确认任务操作是否完成，不等于失败；
+        // 保持当前状态（执行中为 RUNNING），由租约驱动的恢复流程或下一次执行刷新
+        console.warn(`任务 ${taskId} 执行结果不确定，保持当前状态 ${task.status}，不标记为 FAILED`);
       } else {
-        // 失败执行的处理
+        // 执行失败或执行中断的处理
         newStatus = TaskStatus.FAILED;
 
         // 特殊处理：检查是否为GitHub凭据相关错误
+        // 只精确匹配凭据缺失/失效的明确消息，避免网络错误消息（如
+        // “GitHub凭据验证失败（网络或服务端错误）”仅含“GitHub凭据”子串）被误判为凭据错误
         const isCredentialError = executionResult.error && (
-          executionResult.error.includes('GitHub凭据') ||
           executionResult.error.includes('未找到GitHub凭据') ||
           executionResult.error.includes('凭据无效或已过期')
         );

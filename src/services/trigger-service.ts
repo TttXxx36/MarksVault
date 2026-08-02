@@ -3,7 +3,7 @@
  * 管理基于事件的触发器
  */
 
-import { Task, TaskStatus, TriggerType, EventType } from '../types/task';
+import { Task, TaskStatus, TriggerType, EventType, ExecutionOutcome } from '../types/task';
 import taskService from './task-service';
 
 class TriggerService {
@@ -71,6 +71,15 @@ class TriggerService {
         
         // 如果没有执行历史，或者最后执行成功，则不需要恢复
         if (!lastExecution || lastExecution.success) {
+          continue;
+        }
+        
+        // 执行中断或结果不确定的任务不自动恢复（中断不会自动续跑，
+        // 结果不确定不得自动重试）；仅恢复普通失败且非凭据错误的任务。
+        // 旧数据 outcome 缺省为 undefined，不在此列，仍按后续逻辑处理
+        if (lastExecution.outcome === ExecutionOutcome.INTERRUPTED ||
+            lastExecution.outcome === ExecutionOutcome.UNCERTAIN) {
+          console.log(`任务 ${task.id} 上次执行中断或结果不确定，不自动恢复`);
           continue;
         }
         
@@ -148,7 +157,8 @@ class TriggerService {
         }
         
         try {
-          const result = await taskExecutor.executeTask(task.id);
+          // 事件自动触发路径：执行来源为 event
+          const result = await taskExecutor.executeTask(task.id, 0, 'event');
           
           if (result.success) {
             console.log(`事件触发任务 ${task.name} (${task.id}) 执行成功: ${result.details || '无详细信息'}`);

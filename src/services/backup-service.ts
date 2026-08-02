@@ -2,7 +2,7 @@ import { BookmarkBackup, BackupResult, BackupStatus } from '../types/backup';
 import { GitHubCredentials } from '../utils/storage-service';
 import { BookmarkItem, findBookmarkBar, isBookmarkBarNode } from '../utils/bookmark-service';
 import bookmarkService from '../utils/bookmark-service';
-import githubService from './github-service';
+import githubService, { isRetryableGitHubError, GitHubApiError, RetryableError } from './github-service';
 import storageService from '../utils/storage-service';
 import { getFaviconUrl } from '../utils/favicon-service';
 import { BookmarkSelection } from '../types/task';
@@ -295,6 +295,8 @@ class BackupService {
 
         return {
           success: false,
+          // 结构化可重试性标记：网络/限流等临时性失败可重试，凭据/配置等错误不可重试
+          retryable: isRetryableGitHubError(uploadError),
           error: `备份失败: ${uploadError instanceof Error ? uploadError.message : String(uploadError)}`
         };
       }
@@ -315,6 +317,7 @@ class BackupService {
 
       return {
         success: false,
+        retryable: isRetryableGitHubError(error),
         error: `备份失败: ${error instanceof Error ? error.message : String(error)}`
       };
     }
@@ -412,6 +415,10 @@ class BackupService {
           console.log(`选择最新的配置备份文件: ${filePath}`);
         } catch (error) {
           console.error('获取仓库文件列表失败:', error);
+          // 网络/限流等临时性失败保留结构化分类，供上层判定可重试性
+          if (error instanceof RetryableError || error instanceof GitHubApiError) {
+            throw error;
+          }
           throw new Error(`获取仓库文件列表失败: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
@@ -487,6 +494,7 @@ class BackupService {
 
       return {
         success: false,
+          retryable: isRetryableGitHubError(error),
           error: `恢复失败: ${error instanceof Error ? error.message : String(error)}`
       };
     }
@@ -695,6 +703,7 @@ class BackupService {
 
       return {
         success: false,
+        retryable: isRetryableGitHubError(error),
         error: `恢复失败: ${error instanceof Error ? error.message : String(error)}`
       };
     }
@@ -1397,6 +1406,7 @@ class BackupService {
 
       return {
         success: false,
+        retryable: isRetryableGitHubError(error),
         error: `推送失败: ${error instanceof Error ? error.message : String(error)}`
       };
     }
