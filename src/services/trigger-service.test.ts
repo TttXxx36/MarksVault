@@ -17,6 +17,9 @@ describe('trigger-service 失败任务恢复', () => {
   });
 
   // 构造一个 FAILED 状态且历史最后一条为指定执行结果的任务
+  // 注意：updateTask 已拒绝覆盖 history 字段（保护执行历史不被编辑保存回滚），
+  // 因此通过正规历史写入途径 updateTaskExecutionHistory 注入执行结果；
+  // 任务初始为 FAILED（非 RUNNING/ENABLED），updateTaskExecutionHistory 保持状态不流转
   const createFailedTask = async (id: string, lastExecution: TaskExecutionResult): Promise<void> => {
     await taskService.createTask({
       id,
@@ -25,12 +28,8 @@ describe('trigger-service 失败任务恢复', () => {
       trigger: createManualTrigger('手动'),
       action: createBackupAction('backup'),
     });
-    await taskService.updateTask(id, {
-      history: {
-        executions: [lastExecution],
-        lastExecution,
-      },
-    });
+    const result = await taskService.updateTaskExecutionHistory(id, lastExecution);
+    expect(result.success).toBe(true);
   };
 
   test('上次执行 outcome=INTERRUPTED 的任务不被自动恢复（保持 FAILED）', async () => {

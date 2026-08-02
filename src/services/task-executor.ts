@@ -450,6 +450,32 @@ export class TaskExecutor {
   }
 
   /**
+   * 按当前状态更新任务状态（恢复与收尾兜底专用）
+   * 启用状态是稳定配置，执行结果不覆盖：当前状态为 DISABLED（用户主动禁用）时
+   * 保持禁用，仅由调用方负责写入执行历史；仅 RUNNING/ENABLED 等可流转状态
+   * 才按预期状态更新，避免执行收尾静默改变用户的启用/禁用意图
+   * @param taskId 任务ID
+   * @param status 预期状态（仅当前状态非 DISABLED 时生效）
+   */
+  private async setTaskStatusPreservingDisabled(taskId: string, status: TaskStatus): Promise<void> {
+    try {
+      const taskResult = await taskService.getTaskById(taskId);
+      if (!taskResult.success) {
+        console.error(`任务 ${taskId} 更新状态失败: 无法读取任务当前状态`);
+        return;
+      }
+      const currentStatus = (taskResult.data as Task).status;
+      if (currentStatus === TaskStatus.DISABLED) {
+        console.warn(`任务 ${taskId} 已被用户禁用，保持 DISABLED，不覆盖为 ${status}`);
+        return;
+      }
+      await taskService.setTaskStatus(taskId, status);
+    } catch (error) {
+      console.error(`任务 ${taskId} 更新状态为 ${status} 失败:`, error);
+    }
+  }
+
+  /**
    * 恢复遗留执行（SW 中断/重启后）
    * 按执行租约状态判定遗留执行的结果并写入执行历史：
    * - 未到期租约 → "结果不确定"：原执行可能仍有外部副作用，系统无法确认操作是否完成；
@@ -458,6 +484,8 @@ export class TaskExecutor {
    *   已到期租约一并清理
    * - 无快照 → 无遗留执行（如超时已收尾但状态残留）：不写入历史，仅恢复状态为 ENABLED
    * 恢复完成后清理快照（执行输入已失效）
+   * 状态恢复均遵守"启用状态是稳定配置"规则：执行期间被用户禁用的任务（DISABLED）
+   * 保持禁用，仅写入历史
    * @param taskId 任务ID
    */
   private async recoverInterruptedExecution(taskId: string): Promise<void> {
@@ -471,7 +499,7 @@ export class TaskExecutor {
       if (lease && lease.expiresAt <= Date.now()) {
         await this.releaseExecutionLease(taskId, lease.executionId);
       }
-      await taskService.setTaskStatus(taskId, TaskStatus.ENABLED);
+      await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.ENABLED);
       return;
     }
 
@@ -493,7 +521,7 @@ export class TaskExecutor {
       await taskService.updateTaskExecutionHistory(taskId, executionResult);
       // 结果不确定不等于失败：任务恢复为 ENABLED（可再次执行）；
       // 未到期租约保留，在到期前继续阻止同一任务被重复执行
-      await taskService.setTaskStatus(taskId, TaskStatus.ENABLED);
+      await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.ENABLED);
     } else {
       // 租约已到期或不存在：原执行已失去运行所有权，执行中断
       const executionResult: TaskExecutionResult = {
@@ -506,7 +534,7 @@ export class TaskExecutor {
       };
       console.warn(`任务 ${taskId} 执行租约已到期，恢复为执行中断...`);
       await taskService.updateTaskExecutionHistory(taskId, executionResult);
-      await taskService.setTaskStatus(taskId, TaskStatus.FAILED);
+      await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.FAILED);
       // 原执行已失去运行所有权，清理已到期租约
       if (lease) {
         await this.releaseExecutionLease(taskId, lease.executionId);
@@ -746,7 +774,13 @@ export class TaskExecutor {
       // 执行失败（含可重试的临时性失败）统一走重试判定与失败收尾
       if (executionResult.success) {
         console.log(`更新任务 ${taskId} 执行历史记录...`);
-        await taskService.updateTaskExecutionHistory(taskId, executionResult);
+        // 历史+状态为同一次写入：写入失败时任务可能残留 RUNNING，
+        // 单独兜底恢复 ENABLED（读取当前状态，DISABLED 保持禁用意图）
+        const historyResult = await taskService.updateTaskExecutionHistory(taskId, executionResult);
+        if (!historyResult.success) {
+          console.error(`任务 ${taskId} 更新执行历史失败:`, historyResult.error);
+          await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.ENABLED);
+        }
 
         const executionEndTime = new Date();
         const executionTimeMessage = `开始: ${executionStartTime.toLocaleString()}, 结束: ${executionEndTime.toLocaleString()}, 耗时: ${Math.round((executionEndTime.getTime() - executionStartTime.getTime()) / 1000)}秒`;
@@ -878,10 +912,16 @@ export class TaskExecutor {
 
     // 失败收尾：记录执行历史并将任务状态设置为失败
     console.log(`更新任务 ${taskId} 执行历史(失败)...`);
-    await taskService.updateTaskExecutionHistory(taskId, executionResult);
+    // 历史+状态为同一次写入：写入失败时任务可能残留 RUNNING，
+    // 单独兜底标记 FAILED（读取当前状态，DISABLED 保持禁用意图）
+    const historyResult = await taskService.updateTaskExecutionHistory(taskId, executionResult);
+    if (!historyResult.success) {
+      console.error(`任务 ${taskId} 更新执行历史(失败)失败:`, historyResult.error);
+      await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.FAILED);
+    }
 
     console.log(`更新任务 ${taskId} 状态为 FAILED`);
-    await taskService.setTaskStatus(taskId, TaskStatus.FAILED);
+    await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.FAILED);
 
     const executionEndTime = new Date();
     const executionTimeMessage = `开始: ${executionStartTime.toLocaleString()}, 结束: ${executionEndTime.toLocaleString()}, 耗时: ${Math.round((executionEndTime.getTime() - executionStartTime.getTime()) / 1000)}秒`;
@@ -1163,7 +1203,13 @@ export class TaskExecutor {
       // 执行失败（含可重试的临时性失败）统一走重试判定与失败收尾
       if (executionResult.success) {
         console.log(`更新任务 ${taskId} 执行历史记录...`);
-        await taskService.updateTaskExecutionHistory(taskId, executionResult);
+        // 历史+状态为同一次写入：写入失败时任务可能残留 RUNNING，
+        // 单独兜底恢复 ENABLED（读取当前状态，DISABLED 保持禁用意图）
+        const historyResult = await taskService.updateTaskExecutionHistory(taskId, executionResult);
+        if (!historyResult.success) {
+          console.error(`任务 ${taskId} 更新执行历史失败:`, historyResult.error);
+          await this.setTaskStatusPreservingDisabled(taskId, TaskStatus.ENABLED);
+        }
 
         const executionEndTime = new Date();
         const executionTimeMessage = `开始: ${executionStartTime.toLocaleString()}, 结束: ${executionEndTime.toLocaleString()}, 耗时: ${Math.round((executionEndTime.getTime() - executionStartTime.getTime()) / 1000)}秒`;

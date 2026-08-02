@@ -2,6 +2,7 @@ import backupService from './backup-service';
 import githubService from './github-service';
 import storageService from '../utils/storage-service';
 import bookmarkService from '../utils/bookmark-service';
+import { browser } from 'wxt/browser';
 
 jest.mock('./github-service', () => ({
   __esModule: true,
@@ -20,6 +21,7 @@ jest.mock('../utils/storage-service', () => ({
   __esModule: true,
   default: {
     saveBackupStatus: jest.fn(),
+    setStorageData: jest.fn(),
   },
 }));
 
@@ -95,6 +97,7 @@ describe('backup-service 恢复路径选择', () => {
     jest.clearAllMocks();
     mockedGitHub.repoExists.mockResolvedValue(true);
     mockedStorage.saveBackupStatus.mockResolvedValue({ success: true });
+    mockedStorage.setStorageData.mockResolvedValue({ success: true } as any);
     mockedBookmark.getBookmarkRoots.mockResolvedValue({
       success: true,
       data: [
@@ -307,5 +310,180 @@ describe('backup-service 恢复路径选择', () => {
     expect(faviconMap.size).toBe(2);
 
     fetchIconSpy.mockRestore();
+  });
+});
+
+describe('backup-service restore 前置校验与暂存保护', () => {
+  const mockedGitHub = githubService as jest.Mocked<typeof githubService>;
+  const mockedStorage = storageService as jest.Mocked<typeof storageService>;
+  const mockedBookmark = bookmarkService as jest.Mocked<typeof bookmarkService>;
+  const credentials = { token: 'test-token' };
+  const username = 'alice';
+
+  // 构造备份内容：bookmarks[0].children[0] 为书签栏，其 children 为待恢复数据
+  const buildBackupContent = (barChildren: any[]): string => JSON.stringify({
+    timestamp: 1735600000000,
+    metadata: { totalBookmarks: 1 },
+    bookmarks: [
+      {
+        id: '0',
+        title: 'root',
+        isFolder: true,
+        children: [
+          { id: '1', title: 'Bookmarks Bar', isFolder: true, children: barChildren },
+        ],
+      },
+    ],
+  });
+
+  // 构造嵌套链：leaf 被 depth 层文件夹包裹
+  const buildDeepNestedNode = (depth: number): any => {
+    let node: any = { id: 'leaf', title: 'Leaf', url: 'https://example.com', isFolder: false };
+    for (let i = 0; i < depth; i++) {
+      node = { id: `folder-${i}`, title: `Folder ${i}`, isFolder: true, children: [node] };
+    }
+    return node;
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedGitHub.repoExists.mockResolvedValue(true);
+    mockedStorage.saveBackupStatus.mockResolvedValue({ success: true });
+    mockedStorage.setStorageData.mockResolvedValue({ success: true } as any);
+    mockedBookmark.getBookmarkRoots.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          id: '1',
+          title: 'Bookmarks Bar',
+          isFolder: true,
+          children: [
+            {
+              id: 'old-1',
+              title: 'Old Bookmark',
+              url: 'https://old.example.com',
+              isFolder: false,
+            },
+          ],
+        },
+      ],
+    } as any);
+    mockedBookmark.removeBookmarkTree.mockResolvedValue({ success: true } as any);
+    mockedBookmark.createFolder.mockResolvedValue({
+      success: true,
+      data: { id: 'folder-created' },
+    } as any);
+    mockedBookmark.createBookmark.mockResolvedValue({
+      success: true,
+      data: { id: 'bookmark-created' },
+    } as any);
+    mockedGitHub.getRepositoryFiles.mockResolvedValue([
+      {
+        name: 'bookmarks_backup_20250202020202.json',
+        path: 'bookmarks/bookmarks_backup_20250202020202.json',
+      } as any,
+    ]);
+  });
+
+  test('嵌套层级过深的备份应在任何删除/暂存前被拒绝', async () => {
+    mockedGitHub.getFileContent.mockResolvedValue({
+      content: buildBackupContent([buildDeepNestedNode(101)]),
+    } as any);
+
+    const result = await backupService.restoreFromGitHub(credentials, username);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(result.error).toContain('嵌套层级过深');
+    expect(mockedBookmark.removeBookmarkTree).not.toHaveBeenCalled();
+    expect(mockedStorage.setStorageData).not.toHaveBeenCalled();
+  });
+
+  test('节点数超过上限的备份应在任何删除/暂存前被拒绝', async () => {
+    const manyItems = Array.from({ length: 5001 }, (_, i) => ({
+      id: `b-${i}`,
+      title: `B ${i}`,
+      url: 'https://example.com',
+      isFolder: false,
+    }));
+    mockedGitHub.getFileContent.mockResolvedValue({
+      content: buildBackupContent(manyItems),
+    } as any);
+
+    const result = await backupService.restoreFromGitHub(credentials, username);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(result.error).toContain('备份文件过大');
+    expect(mockedBookmark.removeBookmarkTree).not.toHaveBeenCalled();
+    expect(mockedStorage.setStorageData).not.toHaveBeenCalled();
+  });
+
+  test('暂存现有书签失败时应拒绝恢复，不进入删除阶段', async () => {
+    mockedGitHub.getFileContent.mockResolvedValue({
+      content: buildBackupContent([
+        { id: '2', title: 'Example', url: 'https://example.com', isFolder: false },
+      ]),
+    } as any);
+    mockedStorage.setStorageData.mockResolvedValue({
+      success: false,
+      error: 'quota exceeded',
+    } as any);
+
+    const result = await backupService.restoreFromGitHub(credentials, username);
+
+    expect(result.success).toBe(false);
+    expect(result.retryable).toBe(false);
+    expect(result.error).toContain('暂存现有书签失败');
+    expect(mockedBookmark.removeBookmarkTree).not.toHaveBeenCalled();
+  });
+
+  test('恢复成功前应暂存现有书签树，成功后清理暂存键', async () => {
+    mockedGitHub.getFileContent.mockResolvedValue({
+      content: buildBackupContent([
+        { id: '2', title: 'Example', url: 'https://example.com', isFolder: false },
+      ]),
+    } as any);
+    const removeSpy = jest.spyOn(browser.storage.local, 'remove');
+
+    const result = await backupService.restoreFromGitHub(credentials, username);
+
+    expect(result.success).toBe(true);
+    // 暂存：写入序列化后的书签栏树（含现有旧书签）
+    expect(mockedStorage.setStorageData).toHaveBeenCalledWith(
+      'pending_restore_backup',
+      expect.stringContaining('old-1')
+    );
+    expect(mockedStorage.setStorageData).toHaveBeenCalledWith(
+      'pending_restore_backup',
+      expect.stringContaining('Old Bookmark')
+    );
+    // 成功后清理暂存键
+    expect(removeSpy).toHaveBeenCalledWith('pending_restore_backup');
+    removeSpy.mockRestore();
+  });
+
+  test('恢复中途失败时应保留暂存数据（不清理）', async () => {
+    mockedGitHub.getFileContent.mockResolvedValue({
+      content: buildBackupContent([
+        { id: '2', title: 'Example', url: 'https://example.com', isFolder: false },
+      ]),
+    } as any);
+    mockedBookmark.createBookmark.mockResolvedValue({
+      success: false,
+      error: 'invalid url',
+    } as any);
+    const removeSpy = jest.spyOn(browser.storage.local, 'remove');
+
+    const result = await backupService.restoreFromGitHub(credentials, username);
+
+    expect(result.success).toBe(false);
+    expect(mockedStorage.setStorageData).toHaveBeenCalledWith(
+      'pending_restore_backup',
+      expect.any(String)
+    );
+    // 失败路径不清理暂存数据，供未来回滚
+    expect(removeSpy).not.toHaveBeenCalled();
+    removeSpy.mockRestore();
   });
 });

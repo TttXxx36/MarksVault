@@ -79,19 +79,28 @@ const SettingsView: React.FC<SettingsViewProps> = ({ toastRef }) => {
     setTabValue(newValue);
   };
 
-  // 处理主题颜色更改
-  const handleThemeColorChange = (newColor: string) => {
+  // 处理主题颜色更改（保存失败时回滚状态并提示）
+  const handleThemeColorChange = async (newColor: string) => {
+    const prevSettings = settings;
     const newSettings = {
       ...settings,
       themeColor: newColor
     };
     setSettings(newSettings);
-    storageService.updateSettings({ themeColor: newColor });
     changeThemeColor(newColor);
+    const result = await storageService.updateSettings({ themeColor: newColor });
+    if (!result.success) {
+      // 保存失败：回滚主题色并提示
+      setSettings(prevSettings);
+      // themeColor 为可选字段，回滚时兜底用本次尝试的新颜色
+      changeThemeColor(prevSettings.themeColor ?? newColor);
+      toastRef?.current?.showToast(`保存失败: ${result.error || '未知错误'}`, 'error');
+    }
   };
 
-  // 处理通知设置更改
-  const handleNotificationChange = (setting: 'bookmarkChanges' | 'syncStatus' | 'backupReminders', checked: boolean) => {
+  // 处理通知设置更改（保存失败时回滚状态并提示）
+  const handleNotificationChange = async (setting: 'bookmarkChanges' | 'syncStatus' | 'backupReminders', checked: boolean) => {
+    const prevSettings = settings;
     const currentNotifications = settings.notifications || defaultNotifications;
 
     const newNotifications = {
@@ -105,11 +114,17 @@ const SettingsView: React.FC<SettingsViewProps> = ({ toastRef }) => {
     };
 
     setSettings(newSettings);
-    storageService.updateSettings({ notifications: newNotifications });
+    const result = await storageService.updateSettings({ notifications: newNotifications });
+    if (!result.success) {
+      // 保存失败：回滚通知设置并提示
+      setSettings(prevSettings);
+      toastRef?.current?.showToast(`保存失败: ${result.error || '未知错误'}`, 'error');
+    }
   };
 
-  // 处理备份限制更改
-  const handleBackupLimitChange = (limit: number) => {
+  // 处理备份限制更改（保存失败时回滚状态并提示）
+  const handleBackupLimitChange = async (limit: number) => {
+    const prevSettings = settings;
     const value = Math.max(0, Math.min(100, limit));
     const newSettings = {
       ...settings,
@@ -119,9 +134,14 @@ const SettingsView: React.FC<SettingsViewProps> = ({ toastRef }) => {
       }
     };
     setSettings(newSettings);
-    storageService.updateSettings({
+    const result = await storageService.updateSettings({
       backup: { maxBackupsPerType: value }
     });
+    if (!result.success) {
+      // 保存失败：回滚备份限制并提示
+      setSettings(prevSettings);
+      toastRef?.current?.showToast(`保存失败: ${result.error || '未知错误'}`, 'error');
+    }
   };
 
   if (loading) {

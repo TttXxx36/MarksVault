@@ -73,6 +73,13 @@ class StorageService {
   // 配置导入/导出的 schemaVersion
   private readonly CONFIG_BACKUP_SCHEMA_VERSION = 1 as const;
 
+  // 运行态数据键：不属于用户配置，不应被 importConfig 清空/覆盖
+  // - bookmark_write_lease / execution_lease:* / execution_snapshots：任务执行运行态
+  //   （写书签租约、执行租约、执行快照），与 task-executor.ts 中的常量保持一致
+  // - pending_restore_backup：书签恢复暂存数据（恢复失败时用于回滚）
+  private readonly RUNTIME_STATE_KEYS = ['bookmark_write_lease', 'execution_snapshots', 'pending_restore_backup'];
+  private readonly RUNTIME_STATE_KEY_PREFIXES = ['execution_lease:'];
+
   /**
    * 获取用户设置
    * @returns Promise<StorageResult>
@@ -615,8 +622,25 @@ class StorageService {
       }
 
       // 1) 覆盖导入 local
+      // 先暂存运行态数据（租约/快照/恢复暂存），clear 后回写，
+      // 避免清掉执行中任务的租约、造成并发写书签窗口，或丢失恢复回滚数据。
+      const allLocalData = await browser.storage.local.get(null);
+      const runtimeState: Record<string, any> = {};
+      for (const key of Object.keys(allLocalData)) {
+        const isRuntimeKey = this.RUNTIME_STATE_KEYS.includes(key)
+          || this.RUNTIME_STATE_KEY_PREFIXES.some(prefix => key.startsWith(prefix));
+        if (isRuntimeKey) {
+          runtimeState[key] = allLocalData[key];
+        }
+      }
+
       await browser.storage.local.clear();
       await browser.storage.local.set(data.local as Record<string, any>);
+
+      // 回写运行态数据（以当前运行态为准，覆盖备份文件中同名的 key）
+      if (Object.keys(runtimeState).length > 0) {
+        await browser.storage.local.set(runtimeState);
+      }
 
       // 2) 合并导入 sync（不清空）
       if (data.sync && typeof data.sync === 'object' && !Array.isArray(data.sync)) {

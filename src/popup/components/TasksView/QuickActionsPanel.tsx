@@ -12,7 +12,6 @@ import CachedIcon from '@mui/icons-material/Cached';
 import DashboardCard from '../shared/DashboardCard';
 import { useFaviconRefresh } from '../shared/FaviconRefreshContext';
 
-import taskExecutor from '../../../services/task-executor';
 import taskService, { SYSTEM_TASK_IDS } from '../../../services/task-service';
 import { AuthStatus, GitHubUser } from '../../../types/github';
 import { ToastRef } from '../shared/Toast';
@@ -59,13 +58,28 @@ const QuickActionsPanel: React.FC<QuickActionsPanelProps> = ({
     setIsBackingUp(true);
     try {
       await ensureSystemTasksReady();
-      const result = await taskExecutor.executeTask(SYSTEM_TASK_IDS.BOOKMARKS_BACKUP);
+      // 通过 background Service Worker 执行任务，保证与任务执行器共享同一上下文（租约互斥）
+      const response = await browser.runtime.sendMessage({
+        type: 'EXECUTE_TASK',
+        taskId: SYSTEM_TASK_IDS.BOOKMARKS_BACKUP,
+      });
 
-      if (result.success) {
+      const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+        return typeof value === 'object' && value !== null && !Array.isArray(value);
+      };
+
+      if (!isPlainObject(response)) {
+        throw new Error('备份请求返回格式异常');
+      }
+
+      if (response.success === true) {
         toastRef?.current?.showToast('已完成备份', 'success');
         onExecuted?.();
       } else {
-        toastRef?.current?.showToast(result.error || '备份失败', 'error');
+        toastRef?.current?.showToast(
+          typeof response.error === 'string' ? response.error : '备份失败',
+          'error'
+        );
       }
     } catch (error) {
       console.error('快捷备份失败:', error);

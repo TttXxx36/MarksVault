@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import { BookmarkBackup, BackupResult, BackupStatus } from '../types/backup';
 import { GitHubCredentials } from '../utils/storage-service';
 import { BookmarkItem, findBookmarkBar, isBookmarkBarNode } from '../utils/bookmark-service';
@@ -607,12 +608,55 @@ class BackupService {
 
       console.log(`准备恢复 ${bookmarksToRestore.length} 个书签项`);
 
-      // 5.3 递归删除现有书签
-      // 保存现有书签的备份，以防恢复失败
+      // 5.3 前置校验备份数据（必须在任何删除操作之前执行）
+      // 防止恶意/损坏的备份文件导致递归栈溢出，或超大库在清空后执行超时
+      const MAX_RESTORE_DEPTH = 100; // 最大嵌套层级
+      const MAX_RESTORE_NODE_COUNT = 5000; // 最大节点总数
+
+      let maxDepth = 0;
+      let totalNodes = 0;
+      const validateBackupTree = (items: BookmarkItem[], depth: number): void => {
+        for (const item of items) {
+          totalNodes++;
+          if (depth > maxDepth) {
+            maxDepth = depth;
+          }
+          if (item.children && item.children.length > 0) {
+            validateBackupTree(item.children, depth + 1);
+          }
+        }
+      };
+
+      validateBackupTree(bookmarksToRestore, 0);
+
+      if (maxDepth > MAX_RESTORE_DEPTH) {
+        throw new Error(
+          `备份文件异常：嵌套层级过深（超过 ${MAX_RESTORE_DEPTH} 层，实际 ${maxDepth} 层），已取消恢复`
+        );
+      }
+      if (totalNodes > MAX_RESTORE_NODE_COUNT) {
+        throw new Error(
+          `备份文件过大（超过 ${MAX_RESTORE_NODE_COUNT} 个节点，实际 ${totalNodes} 个），已取消恢复`
+        );
+      }
+
+      console.log(`备份数据校验通过：${totalNodes} 个节点，最大深度 ${maxDepth}`);
+
+      // 5.4 删除前暂存现有书签树（序列化后持久化到 storage.local）
+      // 暂存失败则拒绝执行恢复，确保任何删除操作发生前数据已有保底。
+      // 该数据仅作保底保留，供未来回滚入口使用；本任务不提供 UI 回滚入口。
+      const pendingBackupJson = JSON.stringify(bookmarkBar);
+      const stashResult = await storageService.setStorageData('pending_restore_backup', pendingBackupJson);
+      if (!stashResult.success) {
+        throw new Error(`暂存现有书签失败，已取消恢复: ${stashResult.error || '未知错误'}`);
+      }
+      console.log(`已暂存现有书签到 pending_restore_backup，共 ${bookmarkBar.children?.length || 0} 个一级书签项`);
+
+      // 5.5 递归删除现有书签
       const existingBookmarks = bookmarkBar.children || [];
       console.log(`当前有 ${existingBookmarks.length} 个书签项将被清除`);
 
-      // 5.4 递归创建新书签的函数
+      // 5.6 递归创建新书签的函数
       const createBookmarks = async (
         items: BookmarkItem[],
         parentId: string
@@ -654,7 +698,7 @@ class BackupService {
         }
       };
 
-      // 5.5 开始恢复过程
+      // 5.7 开始恢复过程
       // 先移除现有书签
       try {
         for (const child of bookmarkBar.children || []) {
@@ -671,6 +715,14 @@ class BackupService {
       } catch (restoreError) {
         console.error('恢复过程中发生错误:', restoreError);
         throw restoreError;
+      }
+
+      // 5.8 恢复全部成功，清理暂存备份（清理失败仅记录日志，不影响恢复结果）
+      try {
+        await browser.storage.local.remove('pending_restore_backup');
+        console.log('已清理恢复暂存备份 pending_restore_backup');
+      } catch (cleanupError) {
+        console.error('清理恢复暂存备份失败:', cleanupError);
       }
 
       // 6. 保存恢复状态
@@ -692,6 +744,10 @@ class BackupService {
       };
     } catch (error) {
       console.error('书签恢复失败:', error);
+
+      // 注意：此处刻意不清理 pending_restore_backup 暂存数据。
+      // 恢复失败时该数据保留在 storage.local，作为数据保底供未来回滚入口使用。
+      // 仅当恢复全部成功（5.8）时才删除。
 
       // 保存失败状态
       const backupStatus: BackupStatus = {

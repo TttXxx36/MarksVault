@@ -86,10 +86,12 @@ class TriggerService {
         // 检查错误原因
         const errorMessage = lastExecution.error || '';
         
-        // 如果是凭据相关错误，不自动恢复，需要用户先更新凭据
-        const isCredentialError = errorMessage.includes('GitHub凭据') || 
-                                errorMessage.includes('未找到GitHub凭据') ||
-                                errorMessage.includes('凭据无效');
+        // 如果是凭据相关错误，不自动恢复，需要用户先更新凭据。
+        // 与 task-service 的 isCredentialError 判定保持一致：精确匹配凭据缺失/失效的
+        // 明确消息，避免“GitHub凭据验证失败（网络或服务端错误）”这类仅含
+        // “GitHub凭据”子串的网络错误消息被误判为凭据错误而放弃自动恢复
+        const isCredentialError = errorMessage.includes('未找到GitHub凭据') ||
+                                errorMessage.includes('凭据无效或已过期');
         
         if (isCredentialError) {
           console.log(`任务 ${task.id} 因GitHub凭据问题失败，需要用户在“概览”页面重新授权后才能恢复`);
@@ -205,7 +207,10 @@ class TriggerService {
       // 浏览器和扩展事件
       case EventType.BROWSER_STARTUP:
       case EventType.EXTENSION_CLICKED:
-        // 这些事件通常不需要特定条件匹配
+        // 死代码：BROWSER_STARTUP 调用时不携带 eventData（本方法第一行
+        // !eventData 即返回 true），EXTENSION_CLICKED 因已配置
+        // action.default_popup 永远不会触发，且任务配置 UI 不为这两类事件
+        // 设置 conditions，故此分支不可达；保留以防御未来改动
         return true;
       
       default:
@@ -229,8 +234,11 @@ class TriggerService {
     // 书签删除事件特殊处理
     if (bookmarkData.removeInfo) {
       // 对于删除事件，可能只能检查父文件夹ID
-      if (conditions.parentFolder && bookmarkData.removeInfo.parentId) {
-        return bookmarkData.removeInfo.parentId === conditions.parentFolder;
+      if (conditions.parentFolder) {
+        // 配置了父文件夹条件但删除数据缺少 parentId（浏览器可能不提供）时，
+        // 按不匹配处理，避免被误放行
+        return !!bookmarkData.removeInfo.parentId &&
+               bookmarkData.removeInfo.parentId === conditions.parentFolder;
       }
       // 如果没有指定父文件夹条件，则视为匹配
       return true;
@@ -239,19 +247,21 @@ class TriggerService {
     const bookmark = bookmarkData.bookmark;
     let isMatch = true;
     
-    // URL匹配
-    if (conditions.url && bookmark.url) {
-      isMatch = isMatch && bookmark.url.includes(conditions.url);
+    // URL匹配：仅当配置了 url 条件时才参与判断。
+    // 字段缺失时（如 moved 事件只携带 id/parentId）视为不匹配，
+    // 避免“条件已配置但数据无此字段”被误放行
+    if (conditions.url) {
+      isMatch = isMatch && !!bookmark.url && bookmark.url.includes(conditions.url);
     }
     
-    // 标题匹配
-    if (conditions.title && bookmark.title) {
-      isMatch = isMatch && bookmark.title.includes(conditions.title);
+    // 标题匹配：同上，changed/moved 事件可能不携带 title 字段
+    if (conditions.title) {
+      isMatch = isMatch && !!bookmark.title && bookmark.title.includes(conditions.title);
     }
     
-    // 父文件夹匹配
-    if (conditions.parentFolder && bookmark.parentId) {
-      isMatch = isMatch && bookmark.parentId === conditions.parentFolder;
+    // 父文件夹匹配：同上，changed 事件不携带 parentId 字段
+    if (conditions.parentFolder) {
+      isMatch = isMatch && !!bookmark.parentId && bookmark.parentId === conditions.parentFolder;
     }
     
     return isMatch;

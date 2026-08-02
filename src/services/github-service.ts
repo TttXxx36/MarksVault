@@ -101,6 +101,16 @@ export class GitHubService {
   }
 
   /**
+   * 对路径按段编码，避免 #/?/% 等字符被当作 URL 特殊字符解析
+   * （例如用户输入的文件夹名包含 # 时，未编码会静默上传到错误路径）
+   * @param path 文件或目录路径（可为空字符串）
+   * @returns 逐段编码后的路径
+   */
+  private encodePathSegments(path: string): string {
+    return path.split('/').map(seg => encodeURIComponent(seg)).join('/');
+  }
+
+  /**
    * 统一 fetch 包装：网络层失败（浏览器 fetch 抛 TypeError，如 "Failed to fetch"）
    * 包装为结构化 RetryableError，供调用方按类型判定可重试性
    * @param url 请求地址
@@ -141,6 +151,14 @@ export class GitHubService {
         message
       );
     }
+    // GitHub primary rate limit 返回 403 且响应体 message 含 "API rate limit exceeded"，
+    // 与凭据错误等不可重试的 403 无法仅凭状态码区分，因此这是唯一依据响应体消息字符串做判定的例外
+    const errorMessage = (errorData as { message?: unknown } | undefined)?.message;
+    if (response.status === 403 &&
+        typeof errorMessage === 'string' &&
+        errorMessage.toLowerCase().includes('rate limit')) {
+      throw new RetryableError(RetryableErrorCategory.RATE_LIMIT, message);
+    }
     throw new GitHubApiError(response.status, message, errorData);
   }
 
@@ -165,7 +183,7 @@ export class GitHubService {
     sha?: string
   ): Promise<any> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}`;
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${this.encodePathSegments(path)}`;
     
     // Base64编码内容
     const contentEncoded = btoa(unescape(encodeURIComponent(content)));
@@ -213,7 +231,7 @@ export class GitHubService {
     path: string
   ): Promise<{ content: string; sha: string; metadata: any }> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}`;
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${this.encodePathSegments(path)}`;
     
     try {
       const response = await this.fetchWithRetryClassification(url, {
@@ -222,10 +240,6 @@ export class GitHubService {
       }, '获取文件内容');
       
       if (!response.ok) {
-        // 处理404特殊情况（文件不存在）
-        if (response.status === 404) {
-          throw new Error('File not found');
-        }
         await this.throwForErrorResponse(response, '获取文件内容');
       }
       
@@ -264,7 +278,7 @@ export class GitHubService {
     repo: string
   ): Promise<boolean> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}`;
+    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}`;
     
     try {
       const response = await this.fetchWithRetryClassification(url, {
@@ -336,10 +350,14 @@ export class GitHubService {
             const ownerResponse = await this.validateCredentials(credentials);
             const ownerName = ownerResponse.login;
             
-            const existingRepoResponse = await fetch(`${this.baseUrl}/repos/${ownerName}/${name}`, {
-              method: 'GET',
-              headers
-            });
+            const existingRepoResponse = await this.fetchWithRetryClassification(
+              `${this.baseUrl}/repos/${ownerName}/${this.encodePathSegments(name)}`,
+              {
+                method: 'GET',
+                headers
+              },
+              '获取现有仓库信息'
+            );
             
             if (existingRepoResponse.ok) {
               const repoData = await existingRepoResponse.json();
@@ -353,7 +371,11 @@ export class GitHubService {
             }
           } catch (fetchError) {
             console.error('获取现有仓库失败:', fetchError);
-            // 如果获取失败，继续抛出原始错误
+            // 网络错误已包装为 RetryableError(NETWORK)，保留可重试性向上抛出；
+            // 其余错误（如凭据无效的 GitHubApiError）维持原逻辑，继续抛原始 422
+            if (fetchError instanceof RetryableError) {
+              throw fetchError;
+            }
           }
         }
         
@@ -386,9 +408,9 @@ export class GitHubService {
     headers.append('Cache-Control', 'no-cache');
     headers.append('Pragma', 'no-cache');
     
-    // 添加时间戳参数到URL，避免缓存
+    // 添加时间戳参数到URL，避免缓存（仅编码路径段，query 部分保持原样）
     const timestamp = new Date().getTime();
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}?timestamp=${timestamp}`;
+    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}?timestamp=${timestamp}`;
     
     try {
       const response = await this.fetchWithRetryClassification(url, {
@@ -431,7 +453,7 @@ export class GitHubService {
     sha: string
   ): Promise<any> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${path}`;
+    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`;
     
     const body = {
       message,

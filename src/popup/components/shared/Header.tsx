@@ -35,8 +35,8 @@ const Header: React.FC<HeaderProps> = ({ user, onLogout }) => {
   useEffect(() => {
     const checkVersion = async () => {
       try {
-        // 强制检查，忽略冷却时间
-        const result = await versionService.checkForUpdates(true);
+        // 尊重冷却时间检查，避免每次打开 popup 都强刷 GitHub API（无鉴权请求易触发限流）
+        const result = await versionService.checkForUpdates(false);
         
         // 保存当前版本用于显示
         setCurrentVersionForDisplay(result.currentVersion);

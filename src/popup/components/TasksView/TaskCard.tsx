@@ -176,14 +176,16 @@ const TaskCard: React.FC<TaskCardProps> = ({
            task.history.lastExecution.error;
   };
   
-  // 判断错误是否与GitHub凭据相关
+  // 判断错误是否与GitHub凭据相关。
+  // 与 task-service 的 isCredentialError 判定保持一致：精确匹配凭据缺失/失效的
+  // 明确消息，避免“GitHub凭据验证失败（网络或服务端错误）”这类仅含
+  // “GitHub凭据”子串的网络错误消息被误判为凭据错误、误导用户去重新授权
   const isCredentialError = () => {
     if (!task.history.lastExecution || !task.history.lastExecution.error) return false;
     
     const errorMessage = task.history.lastExecution.error;
-    return errorMessage.includes('GitHub凭据') || 
-           errorMessage.includes('未找到GitHub凭据') || 
-           errorMessage.includes('凭据无效');
+    return errorMessage.includes('未找到GitHub凭据') || 
+           errorMessage.includes('凭据无效或已过期');
   };
   
   // 判断是否为手动任务

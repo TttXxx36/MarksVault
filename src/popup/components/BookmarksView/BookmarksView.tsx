@@ -956,15 +956,16 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
       const results = searchResultsRef.current;
       if (results.length === 0) return;
 
-      // 避免与对话框/输入控件内部快捷键冲突
+      // 避免与对话框/菜单/输入控件内部快捷键冲突
       const target = event.target as HTMLElement;
       const inEditable = target.closest('input, textarea, [contenteditable="true"]');
-      const inDialog = target.closest('[role="dialog"]');
+      // MUI Menu 的 role 是 'menu'（而非 'dialog'），需一并纳入，否则搜索结果上的右键菜单按 Esc 会误触发 clearSearch
+      const inDialog = target.closest('[role="dialog"], [role="menu"]');
 
       switch (event.key) {
         case 'ArrowDown':
         case 'ArrowUp': {
-          if (inDialog) return;
+          if (inDialog || inEditable) return;
           event.preventDefault();
           const next = event.key === 'ArrowDown'
             ? Math.min(selectedIndexRef.current + 1, results.length - 1)
@@ -986,7 +987,8 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
           break;
         }
         case 'Escape': {
-          if (inDialog) return;
+          // 焦点在输入框/对话框/菜单内时不拦截，交由控件自身处理
+          if (inDialog || inEditable) return;
           event.preventDefault();
           clearSearch();
           break;
@@ -1178,8 +1180,8 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     onDeleteFolder: handleDeleteFolder,
     onNavigateToFolder: navigateToFolder,
     onNavigateBack: navigateBack,
-    // 非默认排序时禁用拖拽，避免拖拽排序 index 与展示顺序错位
-    onMoveBookmark: sortOrder === 'default' ? handleMoveBookmark : undefined,
+    // 非默认排序或搜索态时禁用拖拽：排序视图下拖拽 index 与展示顺序错位，搜索态下 targetIndex 取真实目录 index 与视觉搜索排名错位
+    onMoveBookmark: sortOrder === 'default' && !isSearching ? handleMoveBookmark : undefined,
     viewType,
     onViewTypeChange: handleViewTypeChange,
     searchText,

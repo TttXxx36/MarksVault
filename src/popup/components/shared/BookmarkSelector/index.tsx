@@ -201,18 +201,25 @@ const BookmarkSelector: React.FC<BookmarkSelectorProps> = ({
     setExpandedIds(newExpandedIds);
   };
 
-  // 全选
+  // 全选（跳过无标题的顶层根节点，与左侧树渲染的跳过判定保持一致，避免整棵书签树被选成单条「未命名/」）
   const handleSelectAll = () => {
     const allIds = new Set<string>();
-    const collectIds = (nodes: Browser.bookmarks.BookmarkTreeNode[]) => {
+    const collectIds = (nodes: Browser.bookmarks.BookmarkTreeNode[], depth: number) => {
       nodes.forEach(node => {
+        // 跳过根节点（无标题的顶层节点），仅收集其子节点
+        if (depth === 0 && !node.title) {
+          if (node.children) {
+            collectIds(node.children, depth + 1);
+          }
+          return;
+        }
         allIds.add(node.id);
         if (node.children) {
-          collectIds(node.children);
+          collectIds(node.children, depth + 1);
         }
       });
     };
-    collectIds(bookmarkTree);
+    collectIds(bookmarkTree, 0);
     setSelectedIds(allIds);
     convertToSelections(allIds);
   };

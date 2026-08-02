@@ -7,7 +7,7 @@ import taskExecutor from '../services/task-executor';
 import taskService from '../services/task-service';
 import triggerService from '../services/trigger-service';
 import { warmupBookmarkFavicons } from '../services/favicon-warmup-service';
-import { createDefaultTaskStorage, EventType } from '../types/task';
+import { ActionType, createDefaultTaskStorage, EventType } from '../types/task';
 
 /**
  * 初始化所有后台服务
@@ -128,14 +128,26 @@ export default defineBackground({
       if (!await ensureServicesInitializedOrLog('bookmarks.onChanged')) {
         return;
       }
-      await triggerService.handleEventTrigger(EventType.BOOKMARK_CHANGED, { id, changeInfo });
+      // 附带最小 bookmark 对象（title/url 为变更后的新值），
+      // 供 trigger-service 的条件匹配使用（仅识别 bookmarkData.bookmark）
+      await triggerService.handleEventTrigger(EventType.BOOKMARK_CHANGED, {
+        id,
+        changeInfo,
+        bookmark: { id, title: changeInfo.title, url: changeInfo.url },
+      });
     });
 
     browser.bookmarks.onMoved.addListener(async (id, moveInfo) => {
       if (!await ensureServicesInitializedOrLog('bookmarks.onMoved')) {
         return;
       }
-      await triggerService.handleEventTrigger(EventType.BOOKMARK_CHANGED, { id, moveInfo });
+      // 附带最小 bookmark 对象（parentId 为移动后的新父文件夹），
+      // 供 trigger-service 的条件匹配使用（仅识别 bookmarkData.bookmark）
+      await triggerService.handleEventTrigger(EventType.BOOKMARK_CHANGED, {
+        id,
+        moveInfo,
+        bookmark: { id, parentId: moveInfo.parentId },
+      });
     });
 
     // 由于在 manifest 中配置了 action.default_popup，chrome.action.onClicked 事件永远不会触发
@@ -183,6 +195,21 @@ export default defineBackground({
 
           const task = taskResult.data;
 
+          // 安全校验：仅允许选择性推送类型的任务通过该通道执行，
+          // 防止 restore 等其他操作绕过 UI 二次确认覆盖书签树
+          if (task.action.type !== ActionType.SELECTIVE_PUSH) {
+            return { success: false, error: '仅支持选择性推送任务' };
+          }
+
+          // 最小形状校验：每个选择项必须是带字符串 id 的对象（容忍缺 title/type）
+          const isValidSelection = (item: unknown): boolean =>
+            typeof item === 'object' &&
+            item !== null &&
+            typeof (item as { id?: unknown }).id === 'string';
+          if (!selections.every(isValidSelection)) {
+            return { success: false, error: '选择数据无效' };
+          }
+
           // 创建带有 selections 的临时任务对象
           const taskWithSelections = {
             ...task,
@@ -203,6 +230,38 @@ export default defineBackground({
 
           console.error('选择性推送失败:', result.error);
           return { success: false, error: result.error };
+        })()
+          .then((response) => sendResponse(response))
+          .catch(respondError);
+
+        return true;
+      }
+
+      if (message.type === 'EXECUTE_TASK') {
+        void (async () => {
+          if (!await ensureServicesInitializedOrLog('runtime.onMessage:EXECUTE_TASK')) {
+            return { success: false, error: '后台服务尚未准备就绪，请稍后重试' };
+          }
+
+          const taskId = message?.payload?.taskId as unknown;
+
+          // 数据校验
+          if (!taskId || typeof taskId !== 'string') {
+            return { success: false, error: '无效的任务ID' };
+          }
+
+          // 校验任务存在
+          const taskResult = await taskService.getTaskById(taskId);
+          if (!taskResult.success || !taskResult.data) {
+            return { success: false, error: '任务不存在' };
+          }
+
+          console.log('收到手动执行任务请求:', { taskId });
+
+          // 用户从 UI 明确发起，执行来源为 manual
+          const result = await taskExecutor.executeTask(taskId, 0, 'manual');
+
+          return { success: result.success, error: result.error };
         })()
           .then((response) => sendResponse(response))
           .catch(respondError);

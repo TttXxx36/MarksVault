@@ -105,8 +105,15 @@ class VersionService {
    * @returns 1 如果 v1 > v2, -1 如果 v1 < v2, 0 如果相等
    */
   compareVersions(v1: string, v2: string): number {
-    const parts1 = v1.split('.').map(n => parseInt(n, 10));
-    const parts2 = v2.split('.').map(n => parseInt(n, 10));
+    // 防御：parseInt 对 'beta' 等非数字段返回 NaN，NaN 参与比较恒为 false，
+    // 会导致版本被误判为相等。将 NaN 归一化为 0，保证比较结果确定。
+    const parseSegment = (seg: string): number => {
+      const n = parseInt(seg, 10);
+      return Number.isNaN(n) ? 0 : n;
+    };
+
+    const parts1 = v1.split('.').map(parseSegment);
+    const parts2 = v2.split('.').map(parseSegment);
     
     const maxLength = Math.max(parts1.length, parts2.length);
     
@@ -180,20 +187,21 @@ class VersionService {
       };
     }
     
-    // 更新最后检查时间
-    this.updateLastCheckTime();
-    
     // 获取最新版本信息
     const releaseInfo = await this.getLatestRelease();
     
     if (!releaseInfo) {
-      // 即使没有 release，也显示开发模式徽章
+      // 获取失败（断网/API 限流/无正式发布）：返回中性结果，
+      // 不显示开发模式徽章（失败 ≠ 开发版），也不更新冷却时间，下次可继续重试
       return {
         hasUpdate: false,
-        currentVersion,
-        isDevelopmentMode: true // 没有正式发布版本时，视为开发模式
+        currentVersion
       };
     }
+    
+    // 仅在成功获取到 release 信息后更新最后检查时间，
+    // 避免失败（如断网）也消耗 24 小时冷却
+    this.updateLastCheckTime();
     
     // 比较版本
     const comparison = this.compareVersions(releaseInfo.version, currentVersion);

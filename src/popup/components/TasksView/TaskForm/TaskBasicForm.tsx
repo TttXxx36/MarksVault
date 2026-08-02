@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import TextField from '@mui/material/TextField';
 import { Task } from '../../../../types/task';
 
@@ -18,8 +18,17 @@ const TaskBasicForm: React.FC<TaskBasicFormProps> = ({ taskData, onChange }) => 
   // 表单验证状态
   const [nameError, setNameError] = useState('');
   
-  // 初始化表单数据
+  // 初始化标记：onChange 是父组件每渲染重建的 inline 函数，且父组件在 onChange 后会生成新的 taskData 对象，
+  // 若每次 effect 都无条件调用 onChange 会形成「setState -> 重渲染 -> effect 再触发」的无限循环。
+  // 因此仅在首次挂载时执行一次初始化（回填名称 + 通知父组件验证状态），用户后续输入走 handleNameChange。
+  const initializedRef = useRef(false);
+  
+  // 初始化表单数据（仅首次挂载执行）
   useEffect(() => {
+    if (initializedRef.current) {
+      return;
+    }
+    initializedRef.current = true;
     setName(taskData.name);
     // 初始化时就通知父组件当前的验证状态
     const isValid = !!taskData.name.trim();
