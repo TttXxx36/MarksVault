@@ -12,6 +12,7 @@ export interface UserSettings {
   backup?: {
     maxBackupsPerType: number; // 每种类型备份的最大保留数量，0表示不限制
   };
+  sortOrder?: BookmarkSortOrder; // 书签目录排序方式：default=浏览器顺序，title=按标题，dateAdded=按添加时间
   // 更多设置项...
 }
 
@@ -63,6 +64,7 @@ export interface StorageResult {
 // 导入备份状态类型
 import { BackupStatus } from '../types/backup';
 import { browser } from 'wxt/browser';
+import type { BookmarkSortOrder } from './bookmark-search-utils';
 
 class StorageService {
   // 备份统计信息缓存的过期时间（毫秒）
@@ -88,7 +90,8 @@ class StorageService {
         },
         backup: {
           maxBackupsPerType: 10 // 默认每种类型最多保留10个备份
-        }
+        },
+        sortOrder: 'default' // 默认使用浏览器顺序
       };
 
       // 如果存储中有设置，与默认设置合并

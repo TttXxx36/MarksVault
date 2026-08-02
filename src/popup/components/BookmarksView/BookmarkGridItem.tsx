@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
@@ -7,6 +7,7 @@ import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import ListItemIcon from '@mui/material/ListItemIcon';
 import ListItemText from '@mui/material/ListItemText';
+import Badge from '@mui/material/Badge';
 import FolderIcon from '@mui/icons-material/Folder';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -16,10 +17,13 @@ import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd';
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import UpdateIcon from '@mui/icons-material/Update';
 import LinkIcon from '@mui/icons-material/Link';
+import CopyIcon from '@mui/icons-material/ContentCopy';
 import { styled } from '@mui/material/styles';
 import { BookmarkItem as BookmarkItemType } from '../../../utils/bookmark-service';
+import { normalizeDuplicateUrlKey } from '../../../utils/bookmark-search-utils';
 import { useBookmarkDragDrop } from './useBookmarkDragDrop';
 import { useFavicon } from './useFavicon';
+import HighlightedText from './HighlightedText';
 
 // 样式化组件
 const GridItemContainer = styled(Box)(({ theme }) => ({
@@ -101,6 +105,7 @@ interface BookmarkGridItemProps {
   bookmark: BookmarkItemType;
   index: number; // Visual index
   isSearching?: boolean;
+  highlightText?: string;
   resolveBookmarkPath?: (bookmarkId: string) => Promise<string>;
   onCreateBookmark?: () => void;
   onCreateFolder?: () => void;
@@ -110,12 +115,17 @@ interface BookmarkGridItemProps {
   onOpen?: (bookmark: BookmarkItemType) => void;
   onOpenFolder?: (bookmark: BookmarkItemType) => void;
   onMoveBookmark?: (bookmarkId: string, destinationFolderId: string, index?: number) => Promise<boolean>;
+  isSelected?: boolean;
+  onCopyLink?: (url: string) => void;
+  duplicateUrlCounts?: ReadonlyMap<string, number>;
 }
 
 const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   bookmark,
   index,
+  isSelected = false,
   isSearching = false,
+  highlightText = '',
   resolveBookmarkPath,
   onCreateBookmark,
   onCreateFolder,
@@ -124,12 +134,21 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   onDelete,
   onOpen,
   onOpenFolder,
-  onMoveBookmark
+  onMoveBookmark,
+  onCopyLink,
+  duplicateUrlCounts
 }) => {
   const [menuAnchorPosition, setMenuAnchorPosition] = useState<{ top: number; left: number } | null>(null);
   const isMenuOpen = Boolean(menuAnchorPosition);
   const [pathTitle, setPathTitle] = useState<string>('');
   const resolvingPathRef = useRef(false);
+
+  // 重复书签标记：该 URL 在当前展示列表中出现 >=2 次时显示出现次数（文件夹无 url，始终为 0）
+  const duplicateCount = useMemo(() => {
+    return bookmark.url && duplicateUrlCounts
+      ? (duplicateUrlCounts.get(normalizeDuplicateUrlKey(bookmark.url)) ?? 0)
+      : 0;
+  }, [bookmark.url, duplicateUrlCounts]);
 
   const { iconUrl, iconError, handleIconError } = useFavicon({
     url: bookmark.url,
@@ -253,6 +272,14 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
     onUpdateToCurrentUrl?.(bookmark.id);
   };
 
+  const handleCopyLinkClick = (event: React.MouseEvent<HTMLElement>) => {
+    event.stopPropagation();
+    handleMenuClose();
+    if (bookmark.url && onCopyLink) {
+      onCopyLink(bookmark.url);
+    }
+  };
+
   return (
     <GridItemContainer
       onClick={handleItemClick}
@@ -266,6 +293,8 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
       onContextMenu={handleContextMenu}
       data-isover={isOver && interactionMode === 'move'} // 使用data-*属性
       data-isfolder={bookmark.isFolder} // 使用data-*属性
+      data-search-index={index}
+      sx={{ ...(isSelected ? { backgroundColor: 'action.selected', boxShadow: 2 } : {}) }}
     >
       {/* 根据交互模式和拖拽位置显示不同的指示器 */}
       {isOver && interactionMode === 'sort' && (
@@ -292,8 +321,27 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
         )}
       </IconContainer>
 
+      {/* 重复书签角标：绝对定位到卡片右上角（IconContainer 有 overflow: hidden，不能包在里面），
+          badge 去掉 translate 偏移使其完整落在卡片内，避免被外层滚动容器裁剪；仅非文件夹项显示 */}
+      {!bookmark.isFolder && duplicateCount > 1 && (
+        <Badge
+          badgeContent={duplicateCount}
+          color="warning"
+          overlap="circular"
+          anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+          sx={{
+            position: 'absolute',
+            top: 0,
+            right: 0,
+            zIndex: 1,
+            // 去掉默认的 translate 偏移，使角标完整落在卡片内，避免被外层滚动容器裁剪
+            '& .MuiBadge-badge': { transform: 'none' }
+          }}
+        />
+      )}
+
       <ItemTitle title={isSearching && pathTitle ? pathTitle : bookmark.title}>
-        {bookmark.title}
+        <HighlightedText text={bookmark.title} query={highlightText} />
       </ItemTitle>
 
       <Menu
@@ -317,6 +365,20 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
         )}
 
         {!bookmark.isFolder && bookmark.url && <Divider sx={{ my: 0.5 }} />}
+
+        {!bookmark.isFolder && bookmark.url && (
+          <MenuItem
+            onClick={handleCopyLinkClick}
+            sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: '28px' }}>
+              <CopyIcon fontSize="small" sx={{ fontSize: '1.1rem' }} />
+            </ListItemIcon>
+            <ListItemText primaryTypographyProps={{ variant: 'body2', sx: { fontSize: '0.85rem' } }}>
+              复制链接
+            </ListItemText>
+          </MenuItem>
+        )}
 
         {!bookmark.isFolder && bookmark.url && (
           <MenuItem

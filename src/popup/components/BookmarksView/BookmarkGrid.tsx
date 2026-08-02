@@ -64,7 +64,11 @@ interface BookmarkGridProps {
   onMoveBookmark?: (bookmarkId: string, destinationFolderId: string, index?: number) => Promise<boolean>;
   searchText: string;
   isSearching: boolean;
+  selectedIndex?: number;
+  onCopyLink?: (url: string) => void;
+  itemListRef?: React.Ref<HTMLDivElement>;
   resolveBookmarkPath?: (bookmarkId: string) => Promise<string>;
+  duplicateUrlCounts?: ReadonlyMap<string, number>;
 }
 
 const BookmarkGrid: React.FC<BookmarkGridProps> = ({
@@ -80,7 +84,11 @@ const BookmarkGrid: React.FC<BookmarkGridProps> = ({
   onMoveBookmark,
   searchText,
   isSearching,
+  selectedIndex = -1,
+  onCopyLink,
+  itemListRef,
   resolveBookmarkPath,
+  duplicateUrlCounts,
   onUpdateToCurrentUrl,
 }) => {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -254,6 +262,7 @@ const BookmarkGrid: React.FC<BookmarkGridProps> = ({
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* 书签网格 */}
       <GridContainer
+        ref={itemListRef}
         onDragOver={handleGridDragOver}
         onDrop={handleGridDrop}
         onContextMenu={handleBackgroundContextMenu}
@@ -274,7 +283,9 @@ const BookmarkGrid: React.FC<BookmarkGridProps> = ({
               key={bookmark.id}
               bookmark={bookmark}
               index={index}
+              isSelected={selectedIndex === index}
               isSearching={isSearching}
+              highlightText={isSearching ? searchText : ''}
               resolveBookmarkPath={resolveBookmarkPath}
               onOpen={handleBookmarkOpen}
               onOpenFolder={handleFolderOpen}
@@ -284,6 +295,8 @@ const BookmarkGrid: React.FC<BookmarkGridProps> = ({
               onEdit={handleEdit}
               onDelete={handleDelete}
               onMoveBookmark={onMoveBookmark}
+              onCopyLink={onCopyLink}
+              duplicateUrlCounts={duplicateUrlCounts}
             />
           ))
         )}

@@ -7,6 +7,7 @@ import { BookmarksHeader } from './BookmarksHeader';
 import { ToastRef } from '../shared/Toast';
 import bookmarkService, { BookmarkItem, BookmarkResult, findBookmarkBar } from '../../../utils/bookmark-service';
 import storageService, { UserSettings } from '../../../utils/storage-service';
+import { getDuplicateUrlCounts, sortBookmarkItems, type BookmarkSortOrder } from '../../../utils/bookmark-search-utils';
 
 interface BookmarksViewProps {
   toastRef: React.RefObject<ToastRef>;
@@ -24,6 +25,7 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
   const [folderStack, setFolderStack] = useState<BookmarkItem[]>([]);
   const [viewType, setViewType] = useState<'list' | 'grid'>('grid'); // 默认使用网格视图
+  const [sortOrder, setSortOrder] = useState<BookmarkSortOrder>('default'); // 书签目录排序方式，默认浏览器顺序
   const [bookmarkBarId, setBookmarkBarId] = useState<string | null>(null); // 添加书签栏ID状态变量
   const [bookmarkRootNodeId, setBookmarkRootNodeId] = useState<string | null>(null); // 根节点ID（Chrome为0，Firefox通常为root开头）
   const bookmarksMap = useRef<Map<string, BookmarkItem>>(new Map());
@@ -57,6 +59,18 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
   const [searchText, setSearchText] = useState('');
   const [searchResults, setSearchResults] = useState<BookmarkItem[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [selectedIndex, setSelectedIndex] = useState(-1); // 搜索键盘导航选中项索引（-1 表示无选中）
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const selectedIndexRef = useRef(-1); // 供键盘事件读取最新选中索引，避免闭包过期
+  const searchResultsRef = useRef<BookmarkItem[]>([]); // 供键盘事件读取最新搜索结果
+
+  useEffect(() => {
+    searchResultsRef.current = searchResults;
+    if (selectedIndex >= searchResults.length) {
+      setSelectedIndex(-1);
+      selectedIndexRef.current = -1;
+    }
+  }, [searchResults, selectedIndex]);
 
   useEffect(() => {
     currentFolderIdRef.current = currentFolderId;
@@ -194,7 +208,7 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
       if (result.success && result.data) {
         const settings = result.data as UserSettings;
         setViewType(settings.viewType);
-        // 可以在这里也加载排序设置，如果需要保存
+        setSortOrder(settings.sortOrder ?? 'default');
       }
     } catch (error) {
       console.error('加载用户设置错误:', error);
@@ -214,6 +228,21 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
   const handleViewTypeChange = useCallback((type: 'list' | 'grid') => {
     setViewType(type);
     saveViewTypeSetting(type);
+  }, []);
+
+  // 保存排序设置
+  const saveSortOrderSetting = async (order: BookmarkSortOrder) => {
+    try {
+      await storageService.updateSettings({ sortOrder: order });
+    } catch (error) {
+      console.error('保存排序设置错误:', error);
+    }
+  };
+
+  // 处理排序方式切换
+  const handleSortOrderChange = useCallback((order: BookmarkSortOrder) => {
+    setSortOrder(order);
+    saveSortOrderSetting(order);
   }, []);
 
 
@@ -265,6 +294,8 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     const safeQuery = typeof query === 'string' ? query : '';
 
     setSearchText(safeQuery);
+    setSelectedIndex(-1);
+    selectedIndexRef.current = -1;
 
     // 取消上一次的 debounce
     if (searchDebounceTimerRef.current) {
@@ -294,6 +325,8 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
   const clearSearch = useCallback(() => {
     setSearchText('');
     setIsSearching(false);
+    setSelectedIndex(-1);
+    selectedIndexRef.current = -1;
 
     if (searchDebounceTimerRef.current) {
       clearTimeout(searchDebounceTimerRef.current);
@@ -861,6 +894,124 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     }
   }, [clearSearch, folderStack, persistViewState]);
 
+  // 面包屑跳转：跳到指定历史层级（folderId 为 null 表示回到书签栏根目录）
+  const navigateToCrumb = useCallback((folderId: string | null) => {
+    clearSearch();
+
+    if (folderId === null) {
+      setFolderStack([]);
+      setCurrentFolderId(null);
+      persistViewState(null);
+      return;
+    }
+
+    const index = folderStack.findIndex(folder => folder.id === folderId);
+    if (index < 0) return;
+    setFolderStack(folderStack.slice(0, index + 1));
+    setCurrentFolderId(folderId);
+    persistViewState(folderId);
+  }, [clearSearch, folderStack, persistViewState]);
+
+  // 复制链接到剪贴板（popup 环境优先使用 Clipboard API，失败时回退 execCommand）
+  const handleCopyLink = useCallback(async (url: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+    } catch {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = url;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        if (!ok) throw new Error('execCommand copy failed');
+      } catch (error) {
+        console.error('复制链接失败:', error);
+        toastRef.current?.showToast('复制链接失败', 'error');
+        return;
+      }
+    }
+    toastRef.current?.showToast('链接已复制', 'success');
+  }, [toastRef]);
+
+  // 搜索键盘导航：↑/↓ 移动选中、Enter 打开选中项、Esc 清空退出；Ctrl/Cmd+F 聚焦搜索框
+  useEffect(() => {
+    const handleGlobalKeyDown = (event: KeyboardEvent) => {
+      // Ctrl/Cmd+F 聚焦搜索框
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      // 仅在搜索态且非 IME 组合输入时启用导航
+      if (!isSearchingRef.current || event.isComposing) return;
+      const results = searchResultsRef.current;
+      if (results.length === 0) return;
+
+      // 避免与对话框/输入控件内部快捷键冲突
+      const target = event.target as HTMLElement;
+      const inEditable = target.closest('input, textarea, [contenteditable="true"]');
+      const inDialog = target.closest('[role="dialog"]');
+
+      switch (event.key) {
+        case 'ArrowDown':
+        case 'ArrowUp': {
+          if (inDialog) return;
+          event.preventDefault();
+          const next = event.key === 'ArrowDown'
+            ? Math.min(selectedIndexRef.current + 1, results.length - 1)
+            : Math.max(selectedIndexRef.current - 1, 0);
+          setSelectedIndex(next);
+          selectedIndexRef.current = next;
+          break;
+        }
+        case 'Enter': {
+          if (inEditable || inDialog) return;
+          event.preventDefault();
+          const item = results[selectedIndexRef.current >= 0 ? selectedIndexRef.current : 0];
+          if (!item) return;
+          if (item.isFolder) {
+            navigateToFolder(item.id);
+          } else if (item.url) {
+            browser.tabs.create({ url: item.url });
+          }
+          break;
+        }
+        case 'Escape': {
+          if (inDialog) return;
+          event.preventDefault();
+          clearSearch();
+          break;
+        }
+        default:
+          break;
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown, true);
+  }, [clearSearch, navigateToFolder]);
+
+  // 选中项变化时滚动到可视区域
+  const itemListRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (selectedIndex < 0) return;
+    const container = itemListRef.current;
+    if (!container) return;
+    const selectedEl = container.querySelector(`[data-search-index="${selectedIndex}"]`);
+    if (selectedEl) {
+      (selectedEl as HTMLElement).scrollIntoView({ block: 'nearest' });
+    }
+  }, [selectedIndex]);
+
   // 处理结果并显示提示
   const handleResult = (result: BookmarkResult, successMessage: string) => {
     if (result.success) {
@@ -1004,7 +1155,15 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     return false;
   };
 
-  const displayedBookmarks = isSearching ? searchResults : currentBookmarks;
+  const displayedBookmarks = useMemo(() => {
+    return isSearching ? searchResults : sortBookmarkItems(currentBookmarks, sortOrder);
+  }, [isSearching, searchResults, currentBookmarks, sortOrder]);
+
+  // 重复书签检测：规范化 URL -> 出现次数（仅含 >=2 次的键），供列表/网格项显示重复角标
+  const duplicateUrlCounts = useMemo(
+    () => getDuplicateUrlCounts(displayedBookmarks),
+    [displayedBookmarks]
+  );
   const parentFolder = folderStack.length > 0 ? folderStack[folderStack.length - 1] : undefined;
 
   const commonProps = useMemo(() => ({
@@ -1019,16 +1178,21 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     onDeleteFolder: handleDeleteFolder,
     onNavigateToFolder: navigateToFolder,
     onNavigateBack: navigateBack,
-    onMoveBookmark: handleMoveBookmark,
+    // 非默认排序时禁用拖拽，避免拖拽排序 index 与展示顺序错位
+    onMoveBookmark: sortOrder === 'default' ? handleMoveBookmark : undefined,
     viewType,
     onViewTypeChange: handleViewTypeChange,
     searchText,
     isSearching,
+    selectedIndex,
+    onCopyLink: handleCopyLink,
     resolveBookmarkPath,
+    duplicateUrlCounts,
     onSearch: handleSearch,
     onClearSearch: clearSearch
   }), [
     displayedBookmarks,
+    duplicateUrlCounts,
     parentFolder,
     isLoading,
     handleAddBookmark,
@@ -1040,10 +1204,13 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
     navigateToFolder,
     navigateBack,
     handleMoveBookmark,
+    sortOrder,
     viewType,
     handleViewTypeChange,
     searchText,
     isSearching,
+    selectedIndex,
+    handleCopyLink,
     resolveBookmarkPath,
     handleSearch,
     clearSearch
@@ -1052,22 +1219,27 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
   // 渲染书签视图
   const renderBookmarkView = () => {
     return viewType === 'grid'
-      ? <BookmarkGrid {...commonProps} />
-      : <BookmarkList {...commonProps} />;
+      ? <BookmarkGrid {...commonProps} itemListRef={itemListRef} />
+      : <BookmarkList {...commonProps} itemListRef={itemListRef} />;
   };
 
   return (
     <PageLayout
       title={
         <BookmarksHeader
-          parentFolder={parentFolder}
+          folderStack={folderStack}
           isSearching={isSearching}
+          searchResultCount={searchResults.length}
           onNavigateBack={navigateBack}
+          onNavigateToCrumb={navigateToCrumb}
           searchText={searchText}
           onSearch={handleSearch}
           onClearSearch={clearSearch}
+          searchInputRef={searchInputRef}
           viewType={viewType}
           onViewTypeChange={handleViewTypeChange}
+          sortOrder={sortOrder}
+          onSortOrderChange={handleSortOrderChange}
         />
       }
     >

@@ -40,7 +40,11 @@ interface BookmarkListProps {
   onMoveBookmark?: (bookmarkId: string, destinationFolderId: string, index?: number) => Promise<boolean>;
   searchText: string;
   isSearching: boolean;
+  selectedIndex?: number;
+  onCopyLink?: (url: string) => void;
+  itemListRef?: React.Ref<HTMLDivElement>;
   resolveBookmarkPath?: (bookmarkId: string) => Promise<string>;
+  duplicateUrlCounts?: ReadonlyMap<string, number>;
 }
 
 const BookmarkList: React.FC<BookmarkListProps> = ({
@@ -56,7 +60,11 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
   onMoveBookmark,
   searchText,
   isSearching,
+  selectedIndex = -1,
+  onCopyLink,
+  itemListRef,
   resolveBookmarkPath,
+  duplicateUrlCounts,
   onUpdateToCurrentUrl,
 }) => {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -227,6 +235,7 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {/* 书签列表 - 改为双栏垂直分栏布局 */}
       <Box
+        ref={itemListRef}
         sx={{
           flexGrow: 1,
           // overflowY: 'auto',  // Let PageLayout handle scroll
@@ -262,7 +271,9 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
               key={bookmark.id}
               bookmark={bookmark}
               index={index}
+              isSelected={selectedIndex === index}
               isSearching={isSearching}
+              highlightText={isSearching ? searchText : ''}
               resolveBookmarkPath={resolveBookmarkPath}
               onCreateBookmark={() => openCreateDialog(false)}
               onCreateFolder={() => openCreateDialog(true)}
@@ -272,6 +283,8 @@ const BookmarkList: React.FC<BookmarkListProps> = ({
               onOpen={handleBookmarkOpen}
               onOpenFolder={handleFolderOpen}
               onMoveBookmark={onMoveBookmark}
+              onCopyLink={onCopyLink}
+              duplicateUrlCounts={duplicateUrlCounts}
             />
           ))
         )}

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import ListItem from '@mui/material/ListItem';
 import ListItemIcon from '@mui/material/ListItemIcon';
@@ -7,6 +7,7 @@ import Divider from '@mui/material/Divider';
 import Menu from '@mui/material/Menu';
 import MenuItem from '@mui/material/MenuItem';
 import ListItemButton from '@mui/material/ListItemButton';
+import Badge from '@mui/material/Badge';
 import FolderIcon from '@mui/icons-material/Folder';
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
@@ -16,10 +17,13 @@ import BookmarkAddIcon from '@mui/icons-material/BookmarkAdd';
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import UpdateIcon from '@mui/icons-material/Update';
 import LinkIcon from '@mui/icons-material/Link';
+import CopyIcon from '@mui/icons-material/ContentCopy';
 import { BookmarkItem as BookmarkItemType } from '../../../utils/bookmark-service';
+import { normalizeDuplicateUrlKey } from '../../../utils/bookmark-search-utils';
 import { styled } from '@mui/material/styles';
 import { useBookmarkDragDrop } from './useBookmarkDragDrop';
 import { useFavicon } from './useFavicon';
+import HighlightedText from './HighlightedText';
 
 // 添加可拖放的文件夹样式
 const DropTargetFolder = styled(ListItemButton)(({ theme }) => ({
@@ -85,6 +89,7 @@ interface BookmarkItemProps {
   bookmark: BookmarkItemType;
   index: number;
   isSearching?: boolean;
+  highlightText?: string;
   resolveBookmarkPath?: (bookmarkId: string) => Promise<string>;
   onCreateBookmark?: () => void;
   onCreateFolder?: () => void;
@@ -94,12 +99,17 @@ interface BookmarkItemProps {
   onOpen?: (bookmark: BookmarkItemType) => void;
   onOpenFolder?: (bookmark: BookmarkItemType) => void;
   onMoveBookmark?: (bookmarkId: string, destinationFolderId: string, index?: number) => Promise<boolean>;
+  isSelected?: boolean;
+  onCopyLink?: (url: string) => void;
+  duplicateUrlCounts?: ReadonlyMap<string, number>;
 }
 
 const BookmarkItem: React.FC<BookmarkItemProps> = ({
   bookmark,
   index,
+  isSelected = false,
   isSearching = false,
+  highlightText = '',
   resolveBookmarkPath,
   onCreateBookmark,
   onCreateFolder,
@@ -108,12 +118,21 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
   onDelete,
   onOpen,
   onOpenFolder,
-  onMoveBookmark
+  onMoveBookmark,
+  onCopyLink,
+  duplicateUrlCounts
 }) => {
   const [menuAnchorPosition, setMenuAnchorPosition] = useState<{ top: number; left: number } | null>(null);
   const isMenuOpen = Boolean(menuAnchorPosition);
   const [pathTitle, setPathTitle] = useState<string>('');
   const resolvingPathRef = useRef(false);
+
+  // 重复书签标记：该 URL 在当前展示列表中出现 >=2 次时显示出现次数（文件夹无 url，始终为 0）
+  const duplicateCount = useMemo(() => {
+    return bookmark.url && duplicateUrlCounts
+      ? (duplicateUrlCounts.get(normalizeDuplicateUrlKey(bookmark.url)) ?? 0)
+      : 0;
+  }, [bookmark.url, duplicateUrlCounts]);
 
   const { iconUrl, iconError, handleIconError } = useFavicon({
     url: bookmark.url,
@@ -147,6 +166,23 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
         resolvingPathRef.current = false;
       });
   };
+
+  // 搜索态：挂载/切换时自动加载路径（无需 hover），与 handleMouseEnter 共用防重
+  useEffect(() => {
+    if (!isSearching || !resolveBookmarkPath || pathTitle || resolvingPathRef.current) return;
+    resolvingPathRef.current = true;
+
+    resolveBookmarkPath(bookmark.id)
+      .then(path => {
+        if (path) setPathTitle(path);
+      })
+      .catch(() => {
+        // ignore
+      })
+      .finally(() => {
+        resolvingPathRef.current = false;
+      });
+  }, [bookmark.id, isSearching, resolveBookmarkPath]);
 
   // 使用自定义 Hook 处理拖拽逻辑
   const {
@@ -243,9 +279,19 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
     onUpdateToCurrentUrl?.(bookmark.id);
   };
 
+  const handleCopyLinkClick = (event: React.MouseEvent<HTMLElement>) => {
+    event.stopPropagation();
+    handleMenuClose();
+    if (bookmark.url && onCopyLink) {
+      onCopyLink(bookmark.url);
+    }
+  };
+
   return (
     <ListItem
       disablePadding
+      data-search-index={index}
+      sx={isSelected ? { backgroundColor: 'action.selected', borderRadius: '4px' } : undefined}
     >
       {bookmark.isFolder ? (
         <DropTargetFolder
@@ -271,8 +317,8 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
             <FolderIcon sx={{ fontSize: 24 }} color={isOver && interactionMode === 'move' ? "primary" : "primary"} />
           </ListItemIcon>
           <ListItemText
-            primary={bookmark.title}
-            secondary={bookmark.isFolder ? (folderItemCount !== null ? `${folderItemCount} 项` : ' ') : ''}
+            primary={<HighlightedText text={bookmark.title} query={highlightText} />}
+            secondary={isSearching && pathTitle ? pathTitle : (bookmark.isFolder ? (folderItemCount !== null ? `${folderItemCount} 项` : ' ') : '')}
             primaryTypographyProps={{
               noWrap: true,
               title: isSearching && pathTitle ? pathTitle : bookmark.title,
@@ -306,20 +352,28 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
             </>
           )}
           <ListItemIcon sx={{ minWidth: '32px' }}>
-            {iconUrl && !iconError ? (
-              <img
-                src={iconUrl}
-                alt={bookmark.title}
-                style={{ width: '24px', height: '24px' }}
-                onError={handleIconError}
-              />
-            ) : (
-              <LinkIcon sx={{ fontSize: 24 }} color="secondary" />
-            )}
+            {/* 重复书签角标：badgeContent 为 0 时 MUI 自动隐藏；仅非文件夹项显示 */}
+            <Badge
+              badgeContent={duplicateCount > 1 ? duplicateCount : 0}
+              color="warning"
+              overlap="circular"
+              anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+            >
+              {iconUrl && !iconError ? (
+                <img
+                  src={iconUrl}
+                  alt={bookmark.title}
+                  style={{ width: '24px', height: '24px' }}
+                  onError={handleIconError}
+                />
+              ) : (
+                <LinkIcon sx={{ fontSize: 24 }} color="secondary" />
+              )}
+            </Badge>
           </ListItemIcon>
           <ListItemText
-            primary={bookmark.title}
-            secondary={bookmark.url}
+            primary={<HighlightedText text={bookmark.title} query={highlightText} />}
+            secondary={isSearching && pathTitle ? pathTitle : bookmark.url}
             primaryTypographyProps={{
               noWrap: true,
               title: isSearching && pathTitle ? pathTitle : bookmark.title,
@@ -357,6 +411,20 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
         )}
 
         {!bookmark.isFolder && bookmark.url && <Divider sx={{ my: 0.5 }} />}
+
+        {!bookmark.isFolder && bookmark.url && (
+          <MenuItem
+            onClick={handleCopyLinkClick}
+            sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
+          >
+            <ListItemIcon sx={{ minWidth: '28px' }}>
+              <CopyIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText primaryTypographyProps={{ variant: 'body2', sx: { fontSize: '13px' } }}>
+              复制链接
+            </ListItemText>
+          </MenuItem>
+        )}
 
         {!bookmark.isFolder && bookmark.url && (
           <MenuItem
