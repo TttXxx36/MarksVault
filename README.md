@@ -210,6 +210,18 @@ npm test
 - 数据存储：GitHub Token 存在 `browser.storage.sync`（便于跨设备），其余业务数据在 `browser.storage.local`。
 - 权限最小化：仅使用 `bookmarks` / `storage`（Chromium 额外使用 `favicon` 读取网站图标）及 GitHub API 的 `https://api.github.com/*` 访问权限。
 
+## 🤖 AI 智能分类
+
+v2.0 支持用户自行配置 AI 供应商，不内置或代管任何 API Key。打开“设置 → 一般”即可配置：
+
+- API 地址：支持直接填写完整地址，也支持常见的 `/v1` 服务根地址；
+- API Key：仅保存于扩展的 `storage.local`，不会进入 `storage.sync`、配置导出或日志；
+- 协议：Responses API、Chat Completions 或自定义兼容请求；
+- 模型：支持手工输入，也可以尝试从供应商的 `/v1/models` 获取列表；
+- 提示词、批量大小、分类数量和超时均可调整。
+
+在书签页点击 ✨ 可生成分类预览。扩展只会把标题、URL、域名和当前文件夹路径发送到用户指定的服务，必须经过预览和确认才会移动书签；执行过程会保存快照，支持失败回滚和最近一次操作撤销。首次测试新的 API 地址时，浏览器会只申请该地址的 origin 权限，用户拒绝权限时不会发送数据。
+
 ## 📚 更多文档
 
 - 修复记录与审计轨迹：[docs/fix.md](docs/fix.md)

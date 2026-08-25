@@ -77,7 +77,7 @@ class StorageService {
   // - bookmark_write_lease / execution_lease:* / execution_snapshots：任务执行运行态
   //   （写书签租约、执行租约、执行快照），与 task-executor.ts 中的常量保持一致
   // - pending_restore_backup：书签恢复暂存数据（恢复失败时用于回滚）
-  private readonly RUNTIME_STATE_KEYS = ['bookmark_write_lease', 'execution_snapshots', 'pending_restore_backup'];
+  private readonly RUNTIME_STATE_KEYS = ['bookmark_write_lease', 'execution_snapshots', 'pending_restore_backup', 'ai_provider_secret'];
   private readonly RUNTIME_STATE_KEY_PREFIXES = ['execution_lease:'];
 
   /**
@@ -544,12 +544,15 @@ class StorageService {
     includeLocalStorage?: boolean;
   }): Promise<StorageResult> {
     try {
-      const [local, syncAll] = await Promise.all([
+      const [localAll, syncAll] = await Promise.all([
         browser.storage.local.get(null),
         browser.storage.sync.get(null)
       ]);
 
       const includeGitHubCredentials = options?.includeGitHubCredentials === true;
+      const local: Record<string, any> = { ...(localAll as Record<string, any>) };
+      // AI Key 只保存在 local secret key 中，永远不随配置导出。
+      delete local.ai_provider_secret;
       const sync: Record<string, any> = { ...syncAll };
       if (!includeGitHubCredentials) {
         // 默认不导出 token，避免用户误分享备份文件导致泄露
@@ -635,7 +638,10 @@ class StorageService {
       }
 
       await browser.storage.local.clear();
-      await browser.storage.local.set(data.local as Record<string, any>);
+      const importedLocal = { ...(data.local as Record<string, any>) };
+      // 配置文件可能来自旧版本或手工编辑，禁止导入 AI secret。
+      delete importedLocal.ai_provider_secret;
+      await browser.storage.local.set(importedLocal);
 
       // 回写运行态数据（以当前运行态为准，覆盖备份文件中同名的 key）
       if (Object.keys(runtimeState).length > 0) {

@@ -74,6 +74,8 @@ export default defineConfig({
       // Firefox 不支持 Chromium 的 `_favicon` 端点，也不需要 `favicon` 权限，避免 AMO 审核噪音
       permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
       host_permissions: ['https://api.github.com/*'],
+      // AI 供应商地址按运行时 origin 精确申请，不作为安装必需权限。
+      optional_host_permissions: ['https://*/*', 'http://*/*'],
       ...(isFirefox
         ? {
             // 固定 Firefox Add-on ID，保证 storage.sync 在升级和跨设备间保持同一命名空间。
