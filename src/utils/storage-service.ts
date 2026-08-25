@@ -553,6 +553,10 @@ class StorageService {
       const local: Record<string, any> = { ...(localAll as Record<string, any>) };
       // AI Key 只保存在 local secret key 中，永远不随配置导出。
       delete local.ai_provider_secret;
+      if (local.ai_provider_config && typeof local.ai_provider_config === 'object') {
+        local.ai_provider_config = { ...(local.ai_provider_config as Record<string, any>) };
+        delete local.ai_provider_config.apiKey;
+      }
       const sync: Record<string, any> = { ...syncAll };
       if (!includeGitHubCredentials) {
         // 默认不导出 token，避免用户误分享备份文件导致泄露
@@ -643,9 +647,13 @@ class StorageService {
       try {
         await browser.storage.local.clear();
         const importedLocal = { ...(data.local as Record<string, any>) };
-      // 配置文件可能来自旧版本或手工编辑，禁止导入 AI secret。
-      delete importedLocal.ai_provider_secret;
-      await browser.storage.local.set(importedLocal);
+        // 配置文件可能来自旧版本或手工编辑，禁止导入 AI secret。
+        delete importedLocal.ai_provider_secret;
+        if (importedLocal.ai_provider_config && typeof importedLocal.ai_provider_config === 'object') {
+          importedLocal.ai_provider_config = { ...(importedLocal.ai_provider_config as Record<string, any>) };
+          delete importedLocal.ai_provider_config.apiKey;
+        }
+        await browser.storage.local.set(importedLocal);
 
       // 回写运行态数据（以当前运行态为准，覆盖备份文件中同名的 key）
       if (Object.keys(runtimeState).length > 0) {
