@@ -634,8 +634,12 @@ class StorageService {
         }
       }
 
-      await browser.storage.local.clear();
-      await browser.storage.local.set(data.local as Record<string, any>);
+      // 事务保护：导入失败时恢复清空前的 local/sync 快照。
+      const previousLocal = { ...(allLocalData as Record<string, any>) };
+      const previousSync = await browser.storage.sync.get(null) as Record<string, any>;
+      try {
+        await browser.storage.local.clear();
+        await browser.storage.local.set(data.local as Record<string, any>);
 
       // 回写运行态数据（以当前运行态为准，覆盖备份文件中同名的 key）
       if (Object.keys(runtimeState).length > 0) {
@@ -657,7 +661,18 @@ class StorageService {
         }
       }
 
-      return { success: true };
+        return { success: true };
+      } catch (mutationError) {
+        try {
+          await browser.storage.local.clear();
+          await browser.storage.local.set(previousLocal);
+          await browser.storage.sync.clear();
+          await browser.storage.sync.set(previousSync);
+        } catch (restoreError) {
+          console.error('导入配置回滚失败:', restoreError);
+        }
+        throw mutationError;
+      }
     } catch (error) {
       console.error('导入配置失败:', error);
       return {
