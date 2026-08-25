@@ -29,6 +29,7 @@ import storageService from '../../../utils/storage-service';
 import backupService, { BackupType } from '../../../services/backup-service';
 import githubService from '../../../services/github-service';
 import { BackupStatus } from '../../../types/backup';
+import SnapshotHistoryCard from '../TasksView/SnapshotHistoryCard';
 
 interface SettingsActionsProps {
   toastRef?: React.RefObject<ToastRef>;
@@ -354,6 +355,7 @@ const SettingsActions: React.FC<SettingsActionsProps> = ({ toastRef }) => {
 
   return (
     <Box sx={{ pb: 2 }}>
+      <SnapshotHistoryCard compact onMessage={(message, severity) => toastRef?.current?.showToast(message, severity)} />
       <Alert 
         severity="warning" 
         sx={{ 

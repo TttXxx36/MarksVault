@@ -109,5 +109,7 @@ export interface AiClassificationPlan {
   appliedBookmarkIds: string[];
   appliedDestinationByBookmarkId: Record<string, string>;
   createdFolderIds: string[];
+  /** Local v2.1 snapshot created and validated immediately before writes. */
+  preSnapshotId?: string;
   state: 'preview' | 'applying' | 'applied' | 'rolled_back';
 }

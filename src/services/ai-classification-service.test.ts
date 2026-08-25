@@ -1,7 +1,8 @@
 import { browser } from 'wxt/browser';
 import { AiClassificationPlan } from '../types/ai';
-import { rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
+import { applyAiClassificationPlan, rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
 import { createDefaultAiProviderConfig, saveAiProviderConfig } from './ai-service';
+import { MemorySnapshotRepository, setSnapshotRepositoryForTesting } from './bookmark-snapshot-service';
 
 describe('ai-classification rollback safety', () => {
   const bookmarks = browser.bookmarks as any;
@@ -13,6 +14,35 @@ describe('ai-classification rollback safety', () => {
     // methods this test needs so assertions and per-node behavior remain isolated.
     bookmarks.get = jest.fn();
     bookmarks.move = jest.fn();
+    bookmarks.create = jest.fn().mockResolvedValue({ id: 'ai-folder', title: '其他' });
+    bookmarks.update = jest.fn();
+    setSnapshotRepositoryForTesting(null);
+  });
+
+  test('refuses every bookmark write when the mandatory AI-before snapshot cannot be stored', async () => {
+    bookmarks.getTree = jest.fn().mockResolvedValue([{
+      id: 'root', title: '', children: [{ id: 'toolbar', title: 'Bookmarks Toolbar', children: [] }],
+    }]);
+    bookmarks.get = jest.fn().mockResolvedValue([{ id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.com', index: 0 }]);
+    const failingRepository = new MemorySnapshotRepository();
+    failingRepository.putSnapshot = jest.fn().mockRejectedValue(new Error('quota exceeded'));
+    setSnapshotRepositoryForTesting(failingRepository);
+    const plan: AiClassificationPlan = {
+      id: 'snapshot-gate-plan',
+      createdAt: Date.now(),
+      categories: [{ name: '其他' }],
+      assignments: [{ bookmarkId: 'b1', categoryName: '其他', confidence: 1 }],
+      snapshot: [{ id: 'b1', parentId: 'toolbar', index: 0 }],
+      skippedBookmarkIds: [],
+      unassignedBookmarkIds: [],
+      appliedBookmarkIds: [],
+      appliedDestinationByBookmarkId: {},
+      createdFolderIds: [],
+      state: 'preview',
+    };
+    await expect(applyAiClassificationPlan(plan)).rejects.toThrow();
+    expect(bookmarks.create).not.toHaveBeenCalled();
+    expect(bookmarks.move).not.toHaveBeenCalled();
   });
 
   test('does not move a node that was changed by the user after the operation', async () => {

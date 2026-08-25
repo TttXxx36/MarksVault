@@ -30,6 +30,7 @@ import { AuthStatus, GitHubUser } from '../../../types/github';
 import QuickActionsPanel from './QuickActionsPanel';
 import AiClassificationTaskCard from './AiClassificationTaskCard';
 import PageLayout from '../shared/PageLayout';
+import SnapshotHistoryCard from './SnapshotHistoryCard';
 
 interface TasksViewProps {
   toastRef?: React.RefObject<ToastRef>;
@@ -288,6 +289,7 @@ const TasksView: React.FC<TasksViewProps> = ({
     >
       <Box>
         <AiClassificationTaskCard />
+        <SnapshotHistoryCard />
         <QuickActionsPanel
           toastRef={toastRef}
           authStatus={authStatus}

@@ -31,6 +31,7 @@ const AiClassifyButton: React.FC = () => {
   const [job, setJob] = useState<AiClassificationJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [providerOrigin, setProviderOrigin] = useState<string | null>(null);
+  const [snapshotName, setSnapshotName] = useState('');
 
   const loadPlan = async () => {
     const storedPlan = await getLastAiClassificationPlan();
@@ -65,6 +66,7 @@ const AiClassifyButton: React.FC = () => {
     setOpen(true);
     setBusy(true);
     setPlan(null);
+    setSnapshotName('');
     setError(null);
     try {
       const config = await getAiProviderConfig();
@@ -127,7 +129,7 @@ const AiClassifyButton: React.FC = () => {
     setBusy(true);
     setError(null);
     try {
-      setPlan(await applyAiClassificationPlan(plan));
+      setPlan(await applyAiClassificationPlan(plan, { snapshotName: snapshotName.trim() || undefined }));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'AI 分类执行失败');
     } finally {
@@ -230,6 +232,15 @@ const AiClassifyButton: React.FC = () => {
               </Box>
               {plan.state === 'preview' && (
                 <>
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="分类前快照名称（可选）"
+                    value={snapshotName}
+                    onChange={event => setSnapshotName(event.target.value.slice(0, 120))}
+                    placeholder="AI 分类前 - YYYY-MM-DD HH-mm-ss"
+                    helperText="确认执行前会创建并校验本地快照；留空使用默认名称。"
+                  />
                   <Alert severity="info">
                     这是只读预览。确认后才会移动书签；执行前会保存当前位置，失败时自动尝试回滚。
                   </Alert>

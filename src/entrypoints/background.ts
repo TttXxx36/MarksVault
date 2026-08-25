@@ -16,6 +16,21 @@ import {
   runAiClassificationJob,
   startAiClassificationJob,
 } from '../services/ai-classification-service';
+import {
+  createBookmarkSnapshot,
+  exportBookmarkSnapshot,
+  importBookmarkSnapshot,
+  listBookmarkSnapshots,
+} from '../services/bookmark-snapshot-service';
+import {
+  applyRestorePlan,
+  cancelRestorePlan,
+  createRestorePlan,
+  getRestorePlan,
+  markRestoreJournalsRecoverable,
+  resumeRestoreJournal,
+  rollbackRestorePlan,
+} from '../services/bookmark-restore-service';
 import { ActionType, createDefaultTaskStorage, EventType } from '../types/task';
 
 /**
@@ -127,6 +142,9 @@ export default defineBackground({
       console.log('浏览器启动，初始化 MarksVault 服务...');
 
       await markAiClassificationRecoverable();
+      // Recovery only marks interrupted restore journals as uncertain. It
+      // never resumes a bookmark write after browser restart.
+      await markRestoreJournalsRecoverable();
 
       // 使用统一的服务初始化函数
       if (!await ensureServicesInitializedOrLog('onStartup')) {
@@ -235,6 +253,90 @@ export default defineBackground({
       if (message.type === 'CANCEL_AI_CLASSIFICATION') {
         void (async () => ({ success: true, job: await cancelAiClassificationJob() }))()
           .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'GET_SNAPSHOT_INDEX') {
+        void listBookmarkSnapshots(message.payload || {})
+          .then(entries => sendResponse({ success: true, entries }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'CREATE_MANUAL_SNAPSHOT') {
+        void createBookmarkSnapshot({
+          source: 'manual',
+          name: typeof message?.payload?.name === 'string' ? message.payload.name : undefined,
+          userName: typeof message?.payload?.userName === 'string' ? message.payload.userName : undefined,
+          isAutomatic: false,
+          isProtected: true,
+        })
+          .then(snapshot => sendResponse({ success: true, snapshot }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'EXPORT_SNAPSHOT') {
+        void exportBookmarkSnapshot(String(message?.payload?.snapshotId || ''))
+          .then(json => sendResponse({ success: true, json }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'IMPORT_SNAPSHOT') {
+        void importBookmarkSnapshot(String(message?.payload?.json || ''), {
+          name: typeof message?.payload?.name === 'string' ? message.payload.name : undefined,
+        })
+          .then(snapshot => sendResponse({ success: true, snapshot }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'CREATE_RESTORE_PLAN') {
+        void createRestorePlan(String(message?.payload?.snapshotId || ''), {
+          userName: typeof message?.payload?.userName === 'string' ? message.payload.userName : undefined,
+          safeChangeIds: Array.isArray(message?.payload?.safeChangeIds) ? message.payload.safeChangeIds : undefined,
+          selectedItemIds: Array.isArray(message?.payload?.selectedItemIds) ? message.payload.selectedItemIds : undefined,
+        })
+          .then(plan => sendResponse({ success: true, plan }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'GET_RESTORE_PLAN') {
+        void getRestorePlan(String(message?.payload?.planId || ''))
+          .then(plan => sendResponse({ success: true, plan }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'APPLY_RESTORE_PLAN') {
+        void applyRestorePlan(String(message?.payload?.planId || ''), {
+          continueAfterUncertain: message?.payload?.continueAfterUncertain === true,
+        })
+          .then(plan => sendResponse({ success: true, plan }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'RESUME_RESTORE') {
+        void resumeRestoreJournal(String(message?.payload?.journalId || ''))
+          .then(plan => sendResponse({ success: true, plan }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'ROLLBACK_RESTORE') {
+        void rollbackRestorePlan(String(message?.payload?.planId || ''))
+          .then(plan => sendResponse({ success: true, plan }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'CANCEL_RESTORE') {
+        void cancelRestorePlan(String(message?.payload?.planId || ''))
+          .then(plan => sendResponse({ success: true, plan }))
           .catch(respondError);
         return true;
       }

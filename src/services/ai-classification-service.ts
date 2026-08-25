@@ -8,6 +8,7 @@ import {
   AiProviderConfig,
 } from '../types/ai';
 import { AI_PROMPT_CONTRACT_VERSION, classifyBookmarks, getAiProviderConfig, AiClassificationOptions } from './ai-service';
+import { createBookmarkSnapshot } from './bookmark-snapshot-service';
 
 type NativeBookmarkNode = {
   id: string;
@@ -316,7 +317,7 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
   return plan;
 }
 
-export async function applyAiClassificationPlan(plan: AiClassificationPlan): Promise<AiClassificationPlan> {
+export async function applyAiClassificationPlan(plan: AiClassificationPlan, options?: { snapshotName?: string; userName?: string }): Promise<AiClassificationPlan> {
   if (plan.state !== 'preview') throw new Error('该分类计划已经执行或撤销');
   const tree = await browser.bookmarks.getTree() as NativeBookmarkNode[];
   const root = getToolbarRoot(tree);
@@ -335,8 +336,22 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
     }
   }
 
+  // SNAP-002 safety gate: capture and validate the complete bookmark tree
+  // before changing state to applying or calling any write API. A snapshot
+  // failure aborts this function and therefore makes zero bookmark writes.
+  const beforeSnapshot = await createBookmarkSnapshot({
+    source: 'ai-classification-before',
+    name: options?.snapshotName,
+    planId: plan.id,
+    userName: options?.userName,
+    affectedBookmarkIds: plan.assignments.map(assignment => assignment.bookmarkId),
+    isAutomatic: true,
+    isProtected: false,
+  });
+
   let applied: AiClassificationPlan = {
     ...plan,
+    preSnapshotId: beforeSnapshot.snapshotId,
     state: 'applying',
     appliedBookmarkIds: [],
     appliedDestinationByBookmarkId: {},

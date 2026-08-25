@@ -86,6 +86,10 @@ class StorageService {
     'ai_provider_config_draft',
     'ai_provider_secret_draft',
     'ai_classification_job',
+    'bookmark_snapshot_index',
+    'bookmark_snapshot_current_task',
+    'bookmark_snapshot_migration',
+    'bookmark_snapshot_recent_state',
   ];
   private readonly RUNTIME_STATE_KEY_PREFIXES = ['execution_lease:'];
 
@@ -567,6 +571,12 @@ class StorageService {
       delete local.ai_provider_secret;
       delete local.ai_provider_secret_draft;
       delete local.ai_classification_job;
+      // Snapshot contents live in IndexedDB; the local index and recovery
+      // marker are runtime state and must not be copied as portable config.
+      delete local.bookmark_snapshot_index;
+      delete local.bookmark_snapshot_current_task;
+      delete local.bookmark_snapshot_migration;
+      delete local.bookmark_snapshot_recent_state;
       const sync: Record<string, any> = { ...syncAll };
       if (!includeGitHubCredentials) {
         // 默认不导出 token，避免用户误分享备份文件导致泄露
