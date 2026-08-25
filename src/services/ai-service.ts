@@ -311,6 +311,7 @@ const buildRequestBody = (
 const normalizeResponse = (
   value: Record<string, unknown>,
   input: AiBookmarkInput[],
+  maxCategories: number,
 ): AiClassificationResponse => {
   const inputIds = new Set(input.map(item => item.id));
   const categoriesByName = new Map<string, AiCategory>();
@@ -361,7 +362,7 @@ const normalizeResponse = (
     }
   }
   return {
-    categories: Array.from(categoriesByName.values()).slice(0, config.maxCategories),
+    categories: Array.from(categoriesByName.values()).slice(0, maxCategories),
     assignments: Array.from(assignmentsById.values()),
   };
 };
@@ -427,7 +428,7 @@ export async function classifyBookmarks(
       body: JSON.stringify(body),
     }, signal);
     const parsed = parseJsonObject(extractText(result.data));
-    const normalized = normalizeResponse(parsed, batch);
+    const normalized = normalizeResponse(parsed, batch, config.maxCategories);
     for (const category of normalized.categories) {
       const key = category.name.toLocaleLowerCase();
       if (!mergedCategories.has(key)) mergedCategories.set(key, category);
