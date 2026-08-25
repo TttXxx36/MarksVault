@@ -431,6 +431,7 @@ export async function classifyBookmarks(
   signal?: AbortSignal,
 ): Promise<AiClassificationResponse> {
   const config = normalizeConfig(configInput);
+  if (!config.enabled) throw new Error('请先在设置中启用 AI 分类');
   if (!config.endpoint || !config.model) throw new Error('请先配置 API 地址和模型');
   if (bookmarks.length === 0) return { categories: [], assignments: [] };
   const allowed = await requestAiHostPermission(config.endpoint);
