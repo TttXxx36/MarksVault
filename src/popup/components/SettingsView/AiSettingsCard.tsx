@@ -16,6 +16,7 @@ import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import DashboardCard from '../shared/DashboardCard';
 import { AiProviderConfig } from '../../../types/ai';
 import { createDefaultAiProviderConfig, getAiProviderConfig, listAiModels, saveAiProviderConfig, testAiConnection } from '../../../services/ai-service';
+import { isFirefox } from '../../../utils/browser-compat';
 
 const AiSettingsCard: React.FC = () => {
   const [config, setConfig] = useState<AiProviderConfig>(createDefaultAiProviderConfig());
@@ -87,6 +88,11 @@ const AiSettingsCard: React.FC = () => {
         <Typography variant="caption" color="text.secondary">
           配置你自己的 API 地址、Key、协议和模型。未配置时不会发送任何书签数据。
         </Typography>
+        {isFirefox() && (
+          <Alert severity="warning" sx={{ py: 0.25 }}>
+            Firefox 当前使用 MV2。自定义 API 地址需要服务端允许扩展跨域（CORS）；插件不会静默申请任意网站权限。
+          </Alert>
+        )}
         <FormControlLabel
           control={<Switch size="small" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />}
           label="启用 AI 分类"

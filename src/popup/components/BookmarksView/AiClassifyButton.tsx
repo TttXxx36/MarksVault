@@ -7,6 +7,7 @@ import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import Button from '@mui/material/Button';
+import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import Alert from '@mui/material/Alert';
 import Chip from '@mui/material/Chip';
@@ -71,6 +72,20 @@ const AiClassifyButton: React.FC = () => {
     }
   };
 
+  const renameCategory = (index: number, nextName: string) => {
+    if (!plan || plan.state !== 'preview') return;
+    const previousName = plan.categories[index]?.name;
+    const name = nextName.replace(/[\\/]/g, '').trim().slice(0, 80);
+    if (!previousName || !name) return;
+    setPlan({
+      ...plan,
+      categories: plan.categories.map((category, categoryIndex) => categoryIndex === index ? { ...category, name } : category),
+      assignments: plan.assignments.map(assignment => assignment.categoryName === previousName
+        ? { ...assignment, categoryName: name }
+        : assignment),
+    });
+  };
+
   const close = () => {
     if (!busy) setOpen(false);
   };
@@ -92,8 +107,21 @@ const AiClassifyButton: React.FC = () => {
               <Typography variant="body2">
                 本次将处理 {plan.assignments.length + plan.skippedBookmarkIds.length} 个书签，创建或使用 {plan.categories.length} 个分类文件夹。
               </Typography>
+              <Typography variant="caption" color="text.secondary">
+                分类名称可在执行前编辑；修改只影响本次计划，不会删除已有文件夹。
+              </Typography>
               <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-                {plan.categories.map(category => <Chip key={category.name} label={category.name} size="small" />)}
+                {plan.categories.map((category, index) => plan.state === 'preview' ? (
+                  <TextField
+                    key={`${category.name}-${index}`}
+                    size="small"
+                    label={`分类 ${index + 1}`}
+                    value={category.name}
+                    onChange={event => renameCategory(index, event.target.value)}
+                    sx={{ minWidth: 150, flex: '1 1 150px' }}
+                    inputProps={{ maxLength: 80 }}
+                  />
+                ) : <Chip key={category.name} label={category.name} size="small" />)}
               </Box>
               {plan.state === 'preview' && (
                 <>

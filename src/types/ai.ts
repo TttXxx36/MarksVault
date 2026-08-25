@@ -48,6 +48,31 @@ export interface AiClassificationResponse {
   assignments: AiAssignment[];
 }
 
+export type AiBatchState = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface AiBatchProgress {
+  batchId: string;
+  bookmarkIds: string[];
+  state: AiBatchState;
+  attempts: number;
+  completedAt?: number;
+  error?: string;
+}
+
+export interface AiClassificationJob {
+  id: string;
+  createdAt: number;
+  updatedAt: number;
+  endpoint: string;
+  model: string;
+  bookmarkIds: string[];
+  batches: AiBatchProgress[];
+  categories: AiCategory[];
+  assignments: AiAssignment[];
+  state: 'classifying' | 'awaiting_review' | 'cancelled' | 'failed';
+  error?: string;
+}
+
 export interface AiSnapshotItem {
   id: string;
   parentId?: string;
@@ -65,5 +90,5 @@ export interface AiClassificationPlan {
   appliedBookmarkIds: string[];
   appliedDestinationByBookmarkId: Record<string, string>;
   createdFolderIds: string[];
-  state: 'preview' | 'applied' | 'rolled_back';
+  state: 'preview' | 'applying' | 'applied' | 'rolled_back';
 }

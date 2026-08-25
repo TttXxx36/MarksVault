@@ -62,6 +62,15 @@ jobs:
       - name: Build & Zip Extensions
         run: npm run zip:all
 
+      - name: Verify Manifests
+        run: npm run verify:manifests
+
+      - name: Firefox AMO Lint
+        run: npm run lint:firefox
+
+      - name: Generate Checksums
+        run: sha256sum .output/*.zip > .output/SHA256SUMS.txt
+
       - name: Generate Changelog
         id: changelog
         run: |
@@ -130,3 +139,4 @@ jobs:
             .output/marksvault-${{ env.PACKAGE_VERSION }}-edge.zip
             .output/marksvault-${{ env.PACKAGE_VERSION }}-firefox.zip
             .output/marksvault-${{ env.PACKAGE_VERSION }}-sources.zip
+            .output/SHA256SUMS.txt

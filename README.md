@@ -207,7 +207,7 @@ npm test
 
 ## 🔐 隐私与权限
 
-- 数据存储：GitHub Token 存在 `browser.storage.sync`（便于跨设备），其余业务数据在 `browser.storage.local`。
+- 数据存储：GitHub Token 和 AI API Key 均保存在 `browser.storage.local`；敏感凭据不会进入 `browser.storage.sync`、配置导出或 GitHub 备份。
 - 权限最小化：仅使用 `bookmarks` / `storage`（Chromium 额外使用 `favicon` 读取网站图标）及 GitHub API 的 `https://api.github.com/*` 访问权限。
 
 ## 🤖 AI 智能分类

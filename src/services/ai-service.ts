@@ -5,6 +5,7 @@ import {
   AiProviderConfig,
   AiCategory,
   AiAssignment,
+  AiBatchProgress,
 } from '../types/ai';
 
 export const AI_CONFIG_KEY = 'ai_provider_config';
@@ -201,6 +202,40 @@ const requestJson = async (
     throw new Error('AI 服务请求失败（HTTP ' + response.status + '）');
   }
   return { status: response.status, data };
+};
+
+const waitForRetry = async (delayMs: number, signal?: AbortSignal): Promise<void> => {
+  if (signal?.aborted) throw new Error('AI 分类已取消');
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, delayMs);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(new Error('AI 分类已取消'));
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+};
+
+const requestJsonWithRetry = async (
+  config: AiProviderConfig,
+  url: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<{ status: number; data: unknown; attempts: number }> => {
+  let attempts = 0;
+  while (attempts < 3) {
+    attempts += 1;
+    try {
+      const result = await requestJson(config, url, init, signal);
+      return { ...result, attempts };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      const retryable = /限流|暂时不可用|网络请求失败|超时/.test(message);
+      if (!retryable || attempts >= 3 || signal?.aborted) throw error;
+      await waitForRetry(500 * attempts, signal);
+    }
+  }
+  throw new Error('AI 请求失败');
 };
 
 const extractText = (data: unknown): string => {
@@ -429,12 +464,36 @@ export async function testAiConnection(configInput: AiProviderConfig): Promise<{
   }
 }
 
+export interface AiClassificationOptions {
+  signal?: AbortSignal;
+  resume?: {
+    completedBatchIds: string[];
+    categories: AiCategory[];
+    assignments: AiAssignment[];
+  };
+  onBatchProgress?: (progress: AiBatchProgress, response?: AiClassificationResponse) => Promise<void> | void;
+}
+
+const isAbortSignal = (value: AbortSignal | AiClassificationOptions | undefined): value is AbortSignal => {
+  return Boolean(value && typeof (value as AbortSignal).aborted === 'boolean');
+};
+
+const getBatchId = (offset: number, batch: AiBookmarkInput[]): string => {
+  const first = batch[0]?.id || 'empty';
+  const last = batch[batch.length - 1]?.id || 'empty';
+  return `${offset}:${batch.length}:${first}:${last}`;
+};
+
 export async function classifyBookmarks(
   configInput: AiProviderConfig,
   bookmarks: AiBookmarkInput[],
-  signal?: AbortSignal,
+  signalOrOptions?: AbortSignal | AiClassificationOptions,
 ): Promise<AiClassificationResponse> {
   const config = normalizeConfig(configInput);
+  const options: AiClassificationOptions = isAbortSignal(signalOrOptions)
+    ? { signal: signalOrOptions }
+    : signalOrOptions || {};
+  const signal = options.signal;
   if (!config.enabled) throw new Error('请先在设置中启用 AI 分类');
   if (!config.endpoint || !config.model) throw new Error('请先配置 API 地址和模型');
   if (bookmarks.length === 0) return { categories: [], assignments: [] };
@@ -442,24 +501,56 @@ export async function classifyBookmarks(
   if (!allowed) throw new Error('浏览器未授予该 API 地址的访问权限');
   const mergedCategories = new Map<string, AiCategory>();
   const mergedAssignments = new Map<string, AiAssignment>();
+  for (const category of options.resume?.categories || []) {
+    mergedCategories.set(category.name.toLocaleLowerCase(), category);
+  }
+  for (const assignment of options.resume?.assignments || []) {
+    mergedAssignments.set(assignment.bookmarkId, assignment);
+  }
+  const completedBatchIds = new Set(options.resume?.completedBatchIds || []);
   for (let offset = 0; offset < bookmarks.length; offset += config.batchSize) {
-    if (signal?.aborted) throw new Error('AI 分类已取消');
     const batch = bookmarks.slice(offset, offset + config.batchSize);
+    const batchId = getBatchId(offset, batch);
+    if (completedBatchIds.has(batchId)) continue;
+    if (signal?.aborted) throw new Error('AI 分类已取消');
+    const batchProgress: AiBatchProgress = {
+      batchId,
+      bookmarkIds: batch.map(item => item.id),
+      state: 'running',
+      attempts: 0,
+    };
+    await options.onBatchProgress?.(batchProgress);
     const prompt = buildPrompt(config, batch);
     const body = buildRequestBody(config, prompt);
-    const result = await requestJson(config, endpointForProtocol(config), {
-      method: 'POST',
-      headers: createHeaders(config),
-      body: JSON.stringify(body),
-    }, signal);
-    const parsed = parseJsonObject(extractText(result.data));
-    const normalized = normalizeResponse(parsed, batch, config.maxCategories);
-    for (const category of normalized.categories) {
-      const key = category.name.toLocaleLowerCase();
-      if (!mergedCategories.has(key)) mergedCategories.set(key, category);
-    }
-    for (const assignment of normalized.assignments) {
-      if (!mergedAssignments.has(assignment.bookmarkId)) mergedAssignments.set(assignment.bookmarkId, assignment);
+    try {
+      const result = await requestJsonWithRetry(config, endpointForProtocol(config), {
+        method: 'POST',
+        headers: createHeaders(config),
+        body: JSON.stringify(body),
+      }, signal);
+      const parsed = parseJsonObject(extractText(result.data));
+      const normalized = normalizeResponse(parsed, batch, config.maxCategories);
+      for (const category of normalized.categories) {
+        const key = category.name.toLocaleLowerCase();
+        if (!mergedCategories.has(key)) mergedCategories.set(key, category);
+      }
+      for (const assignment of normalized.assignments) {
+        if (!mergedAssignments.has(assignment.bookmarkId)) mergedAssignments.set(assignment.bookmarkId, assignment);
+      }
+      await options.onBatchProgress?.({
+        ...batchProgress,
+        state: 'completed',
+        attempts: result.attempts,
+        completedAt: Date.now(),
+      }, normalized);
+    } catch (error) {
+      await options.onBatchProgress?.({
+        ...batchProgress,
+        state: 'failed',
+        attempts: batchProgress.attempts + 1,
+        error: error instanceof Error ? error.message : 'AI 批次失败',
+      });
+      throw error;
     }
   }
   let categories = Array.from(mergedCategories.values());

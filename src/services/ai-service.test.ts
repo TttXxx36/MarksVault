@@ -105,4 +105,41 @@ describe('ai-service user-configured provider', () => {
     }));
   });
 
+  test('persists batch progress and skips a completed batch when resumed', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      batchSize: 10,
+    };
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        output_text: JSON.stringify({
+          categories: [{ name: '开发' }],
+          assignments: [{ bookmarkId: 'b1', categoryName: '开发', confidence: 0.8 }],
+        }),
+      }),
+    });
+    const progress: any[] = [];
+    const input = [{ id: 'b1', title: 'TypeScript', url: 'https://typescriptlang.org', path: '' }];
+    const first = await classifyBookmarks(config, input, {
+      onBatchProgress: item => { progress.push(item); },
+    });
+    expect(progress.map(item => item.state)).toEqual(['running', 'completed']);
+    const callsAfterFirstRun = (globalThis as any).fetch.mock.calls.length;
+
+    const resumed = await classifyBookmarks(config, input, {
+      resume: {
+        completedBatchIds: [progress[1].batchId],
+        categories: first.categories,
+        assignments: first.assignments,
+      },
+    });
+    expect(resumed).toEqual(first);
+    expect((globalThis as any).fetch.mock.calls).toHaveLength(callsAfterFirstRun);
+  });
+
 });

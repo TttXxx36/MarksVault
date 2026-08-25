@@ -1,6 +1,13 @@
 import { browser } from 'wxt/browser';
-import { AiBookmarkInput, AiClassificationPlan, AiProviderConfig } from '../types/ai';
-import { classifyBookmarks, getAiProviderConfig } from './ai-service';
+import {
+  AiAssignment,
+  AiBookmarkInput,
+  AiClassificationJob,
+  AiClassificationPlan,
+  AiClassificationResponse,
+  AiProviderConfig,
+} from '../types/ai';
+import { classifyBookmarks, getAiProviderConfig, AiClassificationOptions } from './ai-service';
 
 type NativeBookmarkNode = {
   id: string;
@@ -13,6 +20,7 @@ type NativeBookmarkNode = {
 };
 
 const PLAN_KEY = 'ai_last_classification_plan';
+const JOB_KEY = 'ai_classification_job';
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -64,7 +72,68 @@ export async function collectAiBookmarks(): Promise<AiBookmarkInput[]> {
 export async function createAiClassificationPlan(configInput?: AiProviderConfig): Promise<AiClassificationPlan> {
   const config = configInput || await getAiProviderConfig();
   const bookmarks = await collectAiBookmarks();
-  const result = await classifyBookmarks(config, bookmarks);
+  const bookmarkIds = bookmarks.map(item => item.id);
+  const storedJob = await getAiClassificationJob();
+  const canResume = storedJob?.state === 'classifying'
+    && storedJob.endpoint === config.endpoint
+    && storedJob.model === config.model
+    && storedJob.bookmarkIds.length === bookmarkIds.length
+    && storedJob.bookmarkIds.every((id, index) => id === bookmarkIds[index]);
+  let job: AiClassificationJob = canResume && storedJob
+    ? storedJob
+    : {
+        id: createId(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        endpoint: config.endpoint,
+        model: config.model,
+        bookmarkIds,
+        batches: [],
+        categories: [],
+        assignments: [],
+        state: 'classifying',
+      };
+  const options: AiClassificationOptions = {
+    resume: {
+      completedBatchIds: job.batches.filter(batch => batch.state === 'completed').map(batch => batch.batchId),
+      categories: job.categories,
+      assignments: job.assignments,
+    },
+    onBatchProgress: async (progress, response) => {
+      const existingIndex = job.batches.findIndex(batch => batch.batchId === progress.batchId);
+      if (existingIndex >= 0) job.batches[existingIndex] = progress;
+      else job.batches.push(progress);
+      if (response) {
+        job.categories = mergeCategories(job.categories, response);
+        job.assignments = mergeAssignments(job.assignments, response.assignments);
+      }
+      job.updatedAt = Date.now();
+      await saveAiClassificationJob(job);
+    },
+  };
+  await saveAiClassificationJob(job);
+  let result: AiClassificationResponse;
+  try {
+    result = await classifyBookmarks(config, bookmarks, options);
+  } catch (error) {
+    job = {
+      ...job,
+      updatedAt: Date.now(),
+      state: error instanceof Error && error.message.includes('取消') ? 'cancelled' : 'failed',
+      error: error instanceof Error ? error.message : 'AI 分类任务失败',
+    };
+    await saveAiClassificationJob(job);
+    throw error;
+  }
+  job = {
+    ...job,
+    updatedAt: Date.now(),
+    state: 'awaiting_review',
+    categories: result.categories,
+    assignments: result.assignments,
+    error: undefined,
+  };
+  await saveAiClassificationJob(job);
   const assignedIds = new Set(result.assignments.map(item => item.bookmarkId));
   const snapshot = bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
   const plan: AiClassificationPlan = {
@@ -105,7 +174,7 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
 
   let applied: AiClassificationPlan = {
     ...plan,
-    state: 'applied',
+    state: 'applying',
     appliedBookmarkIds: [],
     appliedDestinationByBookmarkId: {},
     createdFolderIds: [],
@@ -155,6 +224,8 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
     }
     throw new Error('AI 分类执行失败，已尝试自动回滚');
   }
+  applied = { ...applied, state: 'applied' };
+  await browser.storage.local.set({ [PLAN_KEY]: applied });
   return applied;
 }
 
@@ -194,4 +265,33 @@ export async function getLastAiClassificationPlan(): Promise<AiClassificationPla
   const data = await browser.storage.local.get(PLAN_KEY) as Record<string, unknown>;
   const plan = data[PLAN_KEY];
   return plan && typeof plan === 'object' ? plan as AiClassificationPlan : null;
+}
+
+const mergeCategories = (
+  existing: AiClassificationJob['categories'],
+  response: AiClassificationResponse,
+): AiClassificationJob['categories'] => {
+  const byName = new Map(existing.map(category => [category.name.toLocaleLowerCase(), category]));
+  for (const category of response.categories) {
+    if (!byName.has(category.name.toLocaleLowerCase())) byName.set(category.name.toLocaleLowerCase(), category);
+  }
+  return Array.from(byName.values());
+};
+
+const mergeAssignments = (existing: AiAssignment[], next: AiAssignment[]): AiAssignment[] => {
+  const byId = new Map(existing.map(assignment => [assignment.bookmarkId, assignment]));
+  for (const assignment of next) {
+    if (!byId.has(assignment.bookmarkId)) byId.set(assignment.bookmarkId, assignment);
+  }
+  return Array.from(byId.values());
+};
+
+export async function getAiClassificationJob(): Promise<AiClassificationJob | null> {
+  const data = await browser.storage.local.get(JOB_KEY) as Record<string, unknown>;
+  const job = data[JOB_KEY];
+  return job && typeof job === 'object' ? job as AiClassificationJob : null;
+}
+
+export async function saveAiClassificationJob(job: AiClassificationJob): Promise<void> {
+  await browser.storage.local.set({ [JOB_KEY]: job });
 }
