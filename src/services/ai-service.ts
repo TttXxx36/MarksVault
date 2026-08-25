@@ -249,7 +249,7 @@ const parseJsonObject = (text: string): Record<string, unknown> => {
 
 const normalizeCategoryName = (value: unknown): string => {
   if (typeof value !== 'string') return '';
-  return value.replace(/[\\/\\u0000-\\u001f]/g, '').trim().slice(0, 80);
+  return value.replace(/[\/\\\u0000-\u001f]/g, '').trim().slice(0, 80);
 };
 
 const buildPrompt = (
