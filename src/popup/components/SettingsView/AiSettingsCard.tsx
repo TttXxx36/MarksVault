@@ -217,7 +217,7 @@ const AiSettingsCard: React.FC = () => {
           </Button>
         </Box>
         <Typography variant="caption" color="text.secondary">
-          隐私：只会发送标题、URL、域名和文件夹路径；执行前会显示目标域名并要求确认。API Key 不进入同步存储、配置导出或 GitHub 备份。
+          隐私：书签请求只包含标题、URL、域名和文件夹路径；API Key 仅作为认证头发送给你配置的服务，不会进入书签提示词、同步存储、配置导出或 GitHub 备份。
         </Typography>
       </Stack>
     </DashboardCard>
