@@ -34,7 +34,7 @@ export const getFaviconUrl = (url: string): string => {
     // - 该端点不是 public 资源文件，因此不能直接作为 getURL 的入参（WXT 会对路径做类型收窄）
     // - 这里使用扩展根路径作为 base，再拼接 `_favicon`，避免硬编码 chrome-extension://
     //
-    // Firefox 不支持该端点，直接回退到 Google favicon 服务
+    // Firefox 不支持该端点；为避免把书签域名泄漏给第三方服务，不做远程回退
     const firefoxRuntime = isFirefox();
     if (!firefoxRuntime) {
       // 注意：`runtime.getURL` 的入参应为相对路径，避免传入 '/' 导致部分环境出现双斜杠（`//`）。
