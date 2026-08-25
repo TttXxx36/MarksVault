@@ -7,7 +7,7 @@
 - Firefox 构建使用固定 Add-on ID：`marksvault@tttxxx36.github.io`，避免 `storage.sync` 在升级后丢失命名空间。
 - Chromium 生产包明确声明 favicon 预热所需的 `tabs` / `windows` 权限；Firefox 不申请这些权限。
 - 统一 Firefox/Chromium 运行时判断，减少通过 User-Agent 字符串散落在业务代码中的分支。
-- 保留 Firefox 对 Chromium `_favicon` 端点的安全回退路径。
+- Firefox 不调用 Chromium `_favicon` 端点，也不向 Google 或其他第三方 favicon 服务发送书签域名。
 - 版本号提升到 `1.6.0`。
 
 ## 兼容与隐私
