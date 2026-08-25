@@ -1,6 +1,6 @@
 # v2.0.0 — 用户自配置 AI 智能分类
 
-本版本在 v1.6.0 的跨浏览器基础上增加 AI 分类能力。 Firefox 产物使用 Manifest V3（最低 Firefox 128），以支持用户自定义 AI origin 的运行时权限。AI 服务由用户自行选择和配置，MarksVault 不代管 API Key，也不默认调用任何远程 AI 服务。
+本版本在 v1.6.0 的跨浏览器基础上增加 AI 分类能力。AI 服务由用户自行选择和配置，MarksVault 不代管 API Key，也不默认调用任何远程 AI 服务。
 
 ## 功能
 
