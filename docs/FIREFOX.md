@@ -1,4 +1,4 @@
-# Firefox 支持说明
+# Firefox 支持说明（v2.0）
 
 ## 构建
 
@@ -8,9 +8,11 @@ npm run build:firefox
 npm run zip:firefox
 ```
 
-开发构建输出在 `.output/firefox-mv2-dev`，可通过
+开发构建输出在 `.output/firefox-mv3-dev`，可通过
 `about:debugging#/runtime/this-firefox` 的“临时扩展”加载
-`manifest.json`。生产包使用固定 Add-on ID：
+`manifest.json`。v2.0 Firefox 构建使用 Manifest V3，最低支持 Firefox 128；v1.6 主分支仍保留 MV2 基线。
+
+生产包使用固定 Add-on ID：
 
 `marksvault@tttxxx36.github.io`
 
