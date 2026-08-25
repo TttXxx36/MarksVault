@@ -3,7 +3,6 @@ import {
   AiBookmarkInput,
   AiClassificationResponse,
   AiProviderConfig,
-  AiProtocol,
   AiCategory,
   AiAssignment,
 } from '../types/ai';
