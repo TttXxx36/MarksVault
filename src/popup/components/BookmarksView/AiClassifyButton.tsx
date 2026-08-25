@@ -96,7 +96,7 @@ const AiClassifyButton: React.FC = () => {
                     这是只读预览。确认后才会移动书签；执行前会保存当前位置，失败时自动尝试回滚。
                   </Alert>
                   <Typography variant="caption" color="text.secondary">
-                    将发送字段：标题、URL、域名和文件夹路径；目标服务：{providerOrigin || '未配置'}。不会发送 GitHub Token 或 API Key。
+                    将发送字段：标题、URL、域名和文件夹路径；目标服务：{providerOrigin || '未配置'}。API Key 只作为认证头发送给该服务，不会放入书签内容、同步存储或配置导出。
                   </Typography>
                 </>
               )}
