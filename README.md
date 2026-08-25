@@ -9,7 +9,7 @@
 </div>
 
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.html)
-[![GitHub stars](https://img.shields.io/github/stars/rbetree/MarksVault)](https://github.com/rbetree/MarksVault/stargazers)
+[![GitHub stars](https://img.shields.io/github/stars/TttXxx36/MarksVault)](https://github.com/TttXxx36/MarksVault/stargazers)
 
 > MarksVault 是为现代浏览器设计的高级书签管理扩展。它旨在解决浏览器原生书签功能的局限性，为用户提供更强大、更灵活的书签管理体验。
 > 通过将书签数据安全地存储在用户自己的 GitHub 私有仓库中，确保您的数据安全且完全受您控制。
@@ -114,7 +114,7 @@ wxt.config.ts             # WXT 配置（manifest/构建）
 ## 📥 安装指南
 
 ### 直接安装
-1. 前往 [Releases](https://github.com/rbetree/MarksVault/releases) 页面，下载最新版本的扩展文件：
+1. 前往 [Releases](https://github.com/TttXxx36/MarksVault/releases) 页面，下载最新版本的扩展文件：
    - `marksvault-<version>-chrome.zip` - Chrome / Chromium
    - `marksvault-<version>-edge.zip` - Microsoft Edge
    - `marksvault-<version>-firefox.zip` - Firefox
@@ -130,7 +130,7 @@ wxt.config.ts             # WXT 配置（manifest/构建）
 ### 开发者安装
 1. 克隆MarksVault仓库到本地环境
    ```bash
-   git clone https://github.com/rbetree/MarksVault.git
+   git clone https://github.com/TttXxx36/MarksVault.git
    cd MarksVault
    ```
 2. 安装项目依赖
@@ -216,7 +216,7 @@ npm test
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=rbetree/MarksVault&type=Date)](https://www.star-history.com/#rbetree/MarksVault&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=TttXxx36/MarksVault&type=Date)](https://www.star-history.com/#TttXxx36/MarksVault&Date)
 
 ## License
 
