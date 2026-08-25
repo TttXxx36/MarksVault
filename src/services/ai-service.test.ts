@@ -71,4 +71,38 @@ describe('ai-service user-configured provider', () => {
       endpoint: 'http://remote.example.com',
     })).rejects.toThrow('HTTPS');
   });
+
+  test('constrains assignments when the model exceeds the category limit', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxCategories: 3,
+    };
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        output_text: JSON.stringify({
+          categories: [{ name: 'A' }, { name: 'B' }, { name: 'C' }, { name: 'D' }],
+          assignments: [{ bookmarkId: 'b1', categoryName: 'D', confidence: 0.9 }],
+        }),
+      }),
+    });
+
+    const result = await classifyBookmarks(config, [{
+      id: 'b1',
+      title: 'Example',
+      url: 'https://example.com',
+      path: '',
+    }]);
+
+    expect(result.categories).toHaveLength(3);
+    expect(result.assignments[0]).toEqual(expect.objectContaining({
+      bookmarkId: 'b1',
+      categoryName: '其他',
+    }));
+  });
+
 });
