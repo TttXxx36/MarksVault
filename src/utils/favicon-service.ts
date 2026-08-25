@@ -45,7 +45,7 @@ export const getFaviconUrl = (url: string): string => {
 
     // Firefox 不调用第三方 favicon 服务，避免把书签域名泄漏给 Google。
     // UI 会在空 URL 时直接显示默认图标。
-    if (firefoxRuntime) return '';
+    return '';
   } catch (error) {
     console.error('获取图标URL失败:', error);
     
