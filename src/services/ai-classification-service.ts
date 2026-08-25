@@ -18,7 +18,7 @@ const createId = (): string => {
   return 'ai-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 };
 
-const isFolder = (node: NativeBookmarkNode): boolean => !node.url && Array.isArray(node.children);
+const isFolder = (node: NativeBookmarkNode): boolean => !node.url;
 
 const collectLeaves = (nodes: NativeBookmarkNode[], parentPath = ''): AiBookmarkInput[] => {
   const result: AiBookmarkInput[] = [];
@@ -30,6 +30,8 @@ const collectLeaves = (nodes: NativeBookmarkNode[], parentPath = ''): AiBookmark
         title: node.title,
         url: node.url,
         path: parentPath,
+        parentId: node.parentId,
+        index: node.index,
       });
     }
     if (node.children?.length) result.push(...collectLeaves(node.children, currentPath));
@@ -62,7 +64,8 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
   const config = configInput || await getAiProviderConfig();
   const bookmarks = await collectAiBookmarks();
   const result = await classifyBookmarks(config, bookmarks);
-  const snapshot = bookmarks.map(item => ({ id: item.id }));
+  const assignedIds = new Set(result.assignments.map(item => item.bookmarkId));
+  const snapshot = bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
   return {
     id: createId(),
     createdAt: Date.now(),
@@ -70,7 +73,7 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
     assignments: result.assignments,
     snapshot,
     skippedBookmarkIds: [],
-    unassignedBookmarkIds: [],
+    unassignedBookmarkIds: bookmarks.filter(item => !assignedIds.has(item.id)).map(item => item.id),
     createdFolderIds: [],
     state: 'preview',
   };

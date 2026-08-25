@@ -27,6 +27,8 @@ export interface AiBookmarkInput {
   title: string;
   url: string;
   path: string;
+  parentId?: string;
+  index?: number;
 }
 
 export interface AiCategory {
