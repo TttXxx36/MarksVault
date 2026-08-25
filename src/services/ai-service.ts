@@ -361,8 +361,29 @@ const normalizeResponse = (
       });
     }
   }
+  let categories = Array.from(categoriesByName.values());
+  let allowedCategoryKeys = new Set(
+    categories.slice(0, maxCategories).map(category => category.name.toLocaleLowerCase()),
+  );
+  const hasOverflowAssignment = Array.from(assignmentsById.values())
+    .some(assignment => !allowedCategoryKeys.has(assignment.categoryName.toLocaleLowerCase()));
+  if (hasOverflowAssignment) {
+    // 模型超出分类上限时，保留“其他”作为安全兜底，避免出现没有目标文件夹的 assignment。
+    categories = categories.slice(0, Math.max(0, maxCategories - 1));
+    if (!categories.some(category => category.name === '其他')) categories.push({ name: '其他' });
+    allowedCategoryKeys = new Set(categories.map(category => category.name.toLocaleLowerCase()));
+    for (const assignment of assignmentsById.values()) {
+      if (!allowedCategoryKeys.has(assignment.categoryName.toLocaleLowerCase())) {
+        assignment.categoryName = '其他';
+        assignment.confidence = Math.min(assignment.confidence, 0.2);
+        assignment.reason = assignment.reason || '模型返回的分类超出数量上限';
+      }
+    }
+  } else {
+    categories = categories.slice(0, maxCategories);
+  }
   return {
-    categories: Array.from(categoriesByName.values()).slice(0, maxCategories),
+    categories,
     assignments: Array.from(assignmentsById.values()),
   };
 };
