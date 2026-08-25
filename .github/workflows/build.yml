@@ -28,16 +28,25 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Lint
+        run: npm run lint
+
       - name: Unit Tests
         run: npm test
 
-      - name: Build Project
+      - name: Build Chrome
         run: npm run build
+
+      - name: Build Firefox
+        run: npm run build:firefox
+
+      - name: Build Edge
+        run: npm run build:edge
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: marksvault-build
-          path: .output/chrome-mv3
+          path: .output
           retention-days: 7
 
