@@ -76,6 +76,7 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
     skippedBookmarkIds: [],
     unassignedBookmarkIds: bookmarks.filter(item => !assignedIds.has(item.id)).map(item => item.id),
     appliedBookmarkIds: [],
+    appliedDestinationByBookmarkId: {},
     createdFolderIds: [],
     state: 'preview',
   };
@@ -106,6 +107,7 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
     ...plan,
     state: 'applied',
     appliedBookmarkIds: [],
+    appliedDestinationByBookmarkId: {},
     createdFolderIds: [],
   };
   // 先落盘状态，再执行任何创建/移动；Service Worker 中断后仍可继续撤销。
@@ -127,9 +129,22 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
       if (!targetId) continue;
       const current = await browser.bookmarks.get(assignment.bookmarkId) as NativeBookmarkNode[];
       const node = current[0];
-      if (!node?.url || node.parentId === targetId) continue;
+      if (!node?.url) continue;
+      const nextDestinations = {
+        ...applied.appliedDestinationByBookmarkId,
+        [node.id]: targetId,
+      };
+      if (node.parentId === targetId) {
+        applied = { ...applied, appliedDestinationByBookmarkId: nextDestinations };
+        await browser.storage.local.set({ [PLAN_KEY]: applied });
+        continue;
+      }
       await browser.bookmarks.move(node.id, { parentId: targetId });
-      applied = { ...applied, appliedBookmarkIds: [...applied.appliedBookmarkIds, node.id] };
+      applied = {
+        ...applied,
+        appliedBookmarkIds: [...applied.appliedBookmarkIds, node.id],
+        appliedDestinationByBookmarkId: nextDestinations,
+      };
       await browser.storage.local.set({ [PLAN_KEY]: applied });
     }
   } catch (error) {
@@ -152,6 +167,9 @@ export async function rollbackAiClassificationPlan(planInput?: AiClassificationP
     try {
       const current = await browser.bookmarks.get(item.id) as NativeBookmarkNode[];
       if (!current[0] || current[0].parentId === item.parentId) continue;
+      const expectedParent = plan.appliedDestinationByBookmarkId?.[item.id];
+      // 用户在分类完成后手动移动过的书签不强行覆盖，避免撤销操作吞掉后续修改。
+      if (expectedParent && current[0].parentId !== expectedParent) continue;
       await browser.bookmarks.move(item.id, { parentId: item.parentId, index: item.index });
     } catch {
       // 继续处理其他节点，最终状态仍保存在计划中。

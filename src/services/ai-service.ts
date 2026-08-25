@@ -49,6 +49,9 @@ const validateEndpoint = (endpoint: string): string => {
       !(parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'))) {
     throw new Error('API 地址必须使用 HTTPS；本机调试只允许 localhost 或 127.0.0.1');
   }
+  if (parsed.username || parsed.password || parsed.search) {
+    throw new Error('API 地址不得包含账号、密码或查询参数，请使用 API Key 字段');
+  }
   parsed.hash = '';
   return parsed.toString().replace(/\/$/, '');
 };

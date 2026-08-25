@@ -15,12 +15,14 @@ import CircularProgress from '@mui/material/CircularProgress';
 import Box from '@mui/material/Box';
 import { AiClassificationPlan } from '../../../types/ai';
 import { applyAiClassificationPlan, createAiClassificationPlan, rollbackAiClassificationPlan } from '../../../services/ai-classification-service';
+import { getAiProviderConfig } from '../../../services/ai-service';
 
 const AiClassifyButton: React.FC = () => {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [plan, setPlan] = useState<AiClassificationPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [providerOrigin, setProviderOrigin] = useState<string | null>(null);
 
   const openPreview = async () => {
     setOpen(true);
@@ -28,7 +30,9 @@ const AiClassifyButton: React.FC = () => {
     setPlan(null);
     setError(null);
     try {
-      setPlan(await createAiClassificationPlan());
+      const config = await getAiProviderConfig();
+      setProviderOrigin(config.endpoint ? new URL(config.endpoint).origin : null);
+      setPlan(await createAiClassificationPlan(config));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'AI 分类预览失败');
     } finally {
@@ -87,9 +91,14 @@ const AiClassifyButton: React.FC = () => {
                 {plan.categories.map(category => <Chip key={category.name} label={category.name} size="small" />)}
               </Box>
               {plan.state === 'preview' && (
-                <Alert severity="info">
-                  这是只读预览。确认后才会移动书签；执行前会保存当前位置，失败时自动尝试回滚。
-                </Alert>
+                <>
+                  <Alert severity="info">
+                    这是只读预览。确认后才会移动书签；执行前会保存当前位置，失败时自动尝试回滚。
+                  </Alert>
+                  <Typography variant="caption" color="text.secondary">
+                    将发送字段：标题、URL、域名和文件夹路径；目标服务：{providerOrigin || '未配置'}。不会发送 GitHub Token 或 API Key。
+                  </Typography>
+                </>
               )}
               {plan.state === 'applied' && (
                 <Alert severity="success">分类已完成。你可以立即撤销最近一次分类。</Alert>
