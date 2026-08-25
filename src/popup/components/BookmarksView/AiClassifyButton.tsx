@@ -14,7 +14,7 @@ import Stack from '@mui/material/Stack';
 import CircularProgress from '@mui/material/CircularProgress';
 import Box from '@mui/material/Box';
 import { AiClassificationPlan } from '../../../types/ai';
-import { applyAiClassificationPlan, createAiClassificationPlan, rollbackAiClassificationPlan } from '../../../services/ai-classification-service';
+import { applyAiClassificationPlan, createAiClassificationPlan, getLastAiClassificationPlan, rollbackAiClassificationPlan } from '../../../services/ai-classification-service';
 import { getAiProviderConfig } from '../../../services/ai-service';
 
 const AiClassifyButton: React.FC = () => {
@@ -32,7 +32,12 @@ const AiClassifyButton: React.FC = () => {
     try {
       const config = await getAiProviderConfig();
       setProviderOrigin(config.endpoint ? new URL(config.endpoint).origin : null);
-      setPlan(await createAiClassificationPlan(config));
+      const lastPlan = await getLastAiClassificationPlan();
+      if (lastPlan?.state === 'applied') {
+        setPlan(lastPlan);
+      } else {
+        setPlan(await createAiClassificationPlan(config));
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'AI 分类预览失败');
     } finally {
