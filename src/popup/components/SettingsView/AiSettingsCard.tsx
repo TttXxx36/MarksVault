@@ -5,6 +5,8 @@ import TextField from '@mui/material/TextField';
 import Typography from '@mui/material/Typography';
 import MenuItem from '@mui/material/MenuItem';
 import Alert from '@mui/material/Alert';
+import Switch from '@mui/material/Switch';
+import FormControlLabel from '@mui/material/FormControlLabel';
 import Stack from '@mui/material/Stack';
 import InputAdornment from '@mui/material/InputAdornment';
 import IconButton from '@mui/material/IconButton';
@@ -85,6 +87,10 @@ const AiSettingsCard: React.FC = () => {
         <Typography variant="caption" color="text.secondary">
           配置你自己的 API 地址、Key、协议和模型。未配置时不会发送任何书签数据。
         </Typography>
+        <FormControlLabel
+          control={<Switch size="small" checked={config.enabled} onChange={event => update('enabled', event.target.checked)} />}
+          label="启用 AI 分类"
+        />
         {message && <Alert severity={message.severity} sx={{ py: 0.25 }}>{message.text}</Alert>}
         <TextField
           size="small"
