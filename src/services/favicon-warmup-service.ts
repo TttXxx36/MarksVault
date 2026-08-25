@@ -1,6 +1,7 @@
 import bookmarkService, { type BookmarkItem, findBookmarkBar } from '../utils/bookmark-service';
 import { getFaviconUrl } from '../utils/favicon-service';
 import { browser } from 'wxt/browser';
+import { isFirefox } from '../utils/browser-compat';
 
 export type FaviconWarmupScope = 'bookmark_bar' | 'all';
 
@@ -80,9 +81,7 @@ const dedupeByPageUrl = (urls: string[], maxUrls: number): string[] => {
   return Array.from(byUrl.values());
 };
 
-const isFirefoxRuntime = (): boolean => {
-  return typeof navigator !== 'undefined' && /Firefox/i.test(navigator.userAgent);
-};
+const isFirefoxRuntime = (): boolean => isFirefox();
 
 const waitForTabComplete = async (tabId: number, timeoutMs: number): Promise<boolean> => {
   return new Promise((resolve) => {

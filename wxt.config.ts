@@ -72,8 +72,19 @@ export default defineConfig({
       name: 'MarksVault',
       description: '智能管理、整理和安全备份您的书签数据',
       // Firefox 不支持 Chromium 的 `_favicon` 端点，也不需要 `favicon` 权限，避免 AMO 审核噪音
-      permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon'])],
+      permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
       host_permissions: ['https://api.github.com/*'],
+      ...(isFirefox
+        ? {
+            // 固定 Firefox Add-on ID，保证 storage.sync 在升级和跨设备间保持同一命名空间。
+            browser_specific_settings: {
+              gecko: {
+                id: 'marksvault@tttxxx36.github.io',
+                strict_min_version: '109.0',
+              },
+            },
+          }
+        : {}),
       action: {
         default_icon: {
           16: 'assets/icons/logo/icon16.png',
