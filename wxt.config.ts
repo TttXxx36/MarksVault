@@ -81,6 +81,11 @@ export default defineConfig({
               gecko: {
                 id: 'marksvault@tttxxx36.github.io',
                 strict_min_version: '109.0',
+                // Firefox AMO 数据收集声明：核心备份读取书签；认证信息仅在用户选择 GitHub 备份时发送。
+                data_collection_permissions: {
+                  required: ['bookmarksInfo'],
+                  optional: ['authenticationInfo'],
+                },
               },
             },
           }
