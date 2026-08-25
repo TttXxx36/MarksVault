@@ -125,7 +125,7 @@ export async function requestAiHostPermission(endpoint: string): Promise<boolean
   if (permissionApi.contains && await permissionApi.contains({ origins })) return true;
   if (!permissionApi.request) return true;
   return permissionApi.request({ origins });
-};
+}
 
 const endpointForProtocol = (config: AiProviderConfig): string => {
   const base = validateEndpoint(config.endpoint);
@@ -229,7 +229,7 @@ const extractText = (data: unknown): string => {
 };
 
 const parseJsonObject = (text: string): Record<string, unknown> => {
-  const cleaned = text.trim().replace(/^\```(?:json)?/i, '').replace(/\```$/i, '').trim();
+  const cleaned = text.trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
   try {
     const value = JSON.parse(cleaned);
     const record = asRecord(value);
@@ -249,7 +249,11 @@ const parseJsonObject = (text: string): Record<string, unknown> => {
 
 const normalizeCategoryName = (value: unknown): string => {
   if (typeof value !== 'string') return '';
-  return value.replace(/[\/\\\u0000-\u001f]/g, '').trim().slice(0, 80);
+  return Array.from(value)
+    .filter(character => character !== '/' && character !== '\\' && character.charCodeAt(0) > 0x1f)
+    .join('')
+    .trim()
+    .slice(0, 80);
 };
 
 const buildPrompt = (
