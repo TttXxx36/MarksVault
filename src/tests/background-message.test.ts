@@ -58,11 +58,25 @@ jest.mock('../services/trigger-service', () => ({
   },
 }));
 
+jest.mock('../services/ai-classification-service', () => ({
+  cancelAiClassificationJob: jest.fn(),
+  getAiClassificationJob: jest.fn(),
+  getLastAiClassificationPlan: jest.fn(),
+  markAiClassificationRecoverable: jest.fn(),
+  resumeAiClassificationJob: jest.fn(),
+  runAiClassificationJob: jest.fn(),
+  startAiClassificationJob: jest.fn(),
+}));
+
 import background from '../entrypoints/background';
 import { warmupBookmarkFavicons } from '../services/favicon-warmup-service';
+import { getAiClassificationJob, markAiClassificationRecoverable, startAiClassificationJob } from '../services/ai-classification-service';
 
 describe('background runtime.onMessage', () => {
   const mockedWarmup = warmupBookmarkFavicons as jest.MockedFunction<typeof warmupBookmarkFavicons>;
+  const mockedStartAi = startAiClassificationJob as jest.MockedFunction<typeof startAiClassificationJob>;
+  const mockedGetAi = getAiClassificationJob as jest.MockedFunction<typeof getAiClassificationJob>;
+  const mockedMarkRecoverable = markAiClassificationRecoverable as jest.MockedFunction<typeof markAiClassificationRecoverable>;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -112,5 +126,37 @@ describe('background runtime.onMessage', () => {
       },
       error: undefined,
     });
+  });
+
+  test('START_AI_CLASSIFICATION 只创建后台任务，不等待 Popup 生命周期', async () => {
+    const job = { id: 'job-1', state: 'queued' } as any;
+    mockedStartAi.mockResolvedValue(job);
+
+    (background as any).main();
+    const listener = onMessageListener;
+    if (!listener) throw new Error('runtime.onMessage listener 未注册');
+    const sendResponse = jest.fn();
+    const returned = listener({ type: 'START_AI_CLASSIFICATION' }, null, sendResponse);
+
+    expect(returned).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockedStartAi).toHaveBeenCalledTimes(1);
+    expect(sendResponse).toHaveBeenCalledWith({ success: true, job });
+  });
+
+  test('重新打开 Popup 只读取任务，不会把正在运行的任务暂停', async () => {
+    const job = { id: 'job-running', state: 'classifying' } as any;
+    mockedGetAi.mockResolvedValue(job);
+    mockedMarkRecoverable.mockResolvedValue({ ...job, state: 'paused' });
+
+    (background as any).main();
+    const listener = onMessageListener;
+    if (!listener) throw new Error('runtime.onMessage listener 未注册');
+    const sendResponse = jest.fn();
+    listener({ type: 'GET_AI_CLASSIFICATION_JOB' }, null, sendResponse);
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    expect(sendResponse).toHaveBeenCalledWith({ success: true, job });
+    expect(mockedMarkRecoverable).not.toHaveBeenCalled();
   });
 });

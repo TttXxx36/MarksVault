@@ -28,6 +28,7 @@ import {
 } from '../../styles/TaskStyles';
 import { AuthStatus, GitHubUser } from '../../../types/github';
 import QuickActionsPanel from './QuickActionsPanel';
+import AiClassificationTaskCard from './AiClassificationTaskCard';
 import PageLayout from '../shared/PageLayout';
 
 interface TasksViewProps {
@@ -286,6 +287,7 @@ const TasksView: React.FC<TasksViewProps> = ({
       }
     >
       <Box>
+        <AiClassificationTaskCard />
         <QuickActionsPanel
           toastRef={toastRef}
           authStatus={authStatus}

@@ -77,7 +77,16 @@ class StorageService {
   // - bookmark_write_lease / execution_lease:* / execution_snapshots：任务执行运行态
   //   （写书签租约、执行租约、执行快照），与 task-executor.ts 中的常量保持一致
   // - pending_restore_backup：书签恢复暂存数据（恢复失败时用于回滚）
-  private readonly RUNTIME_STATE_KEYS = ['bookmark_write_lease', 'execution_snapshots', 'pending_restore_backup', 'ai_provider_secret'];
+  private readonly RUNTIME_STATE_KEYS = [
+    'bookmark_write_lease',
+    'execution_snapshots',
+    'pending_restore_backup',
+    'ai_provider_config',
+    'ai_provider_secret',
+    'ai_provider_config_draft',
+    'ai_provider_secret_draft',
+    'ai_classification_job',
+  ];
   private readonly RUNTIME_STATE_KEY_PREFIXES = ['execution_lease:'];
 
   /**
@@ -551,12 +560,13 @@ class StorageService {
 
       const includeGitHubCredentials = options?.includeGitHubCredentials === true;
       const local: Record<string, any> = { ...(localAll as Record<string, any>) };
-      // AI Key 只保存在 local secret key 中，永远不随配置导出。
+      // AI provider configuration, drafts, task checkpoints and secrets are
+      // local runtime state; none should enter a portable backup file.
+      delete local.ai_provider_config;
+      delete local.ai_provider_config_draft;
       delete local.ai_provider_secret;
-      if (local.ai_provider_config && typeof local.ai_provider_config === 'object') {
-        local.ai_provider_config = { ...(local.ai_provider_config as Record<string, any>) };
-        delete local.ai_provider_config.apiKey;
-      }
+      delete local.ai_provider_secret_draft;
+      delete local.ai_classification_job;
       const sync: Record<string, any> = { ...syncAll };
       if (!includeGitHubCredentials) {
         // 默认不导出 token，避免用户误分享备份文件导致泄露

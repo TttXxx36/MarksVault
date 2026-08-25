@@ -7,6 +7,15 @@ import taskExecutor from '../services/task-executor';
 import taskService from '../services/task-service';
 import triggerService from '../services/trigger-service';
 import { warmupBookmarkFavicons } from '../services/favicon-warmup-service';
+import {
+  cancelAiClassificationJob,
+  getAiClassificationJob,
+  getLastAiClassificationPlan,
+  markAiClassificationRecoverable,
+  resumeAiClassificationJob,
+  runAiClassificationJob,
+  startAiClassificationJob,
+} from '../services/ai-classification-service';
 import { ActionType, createDefaultTaskStorage, EventType } from '../types/task';
 
 /**
@@ -70,6 +79,23 @@ export function resetServicesInitStateForTesting(): void {
 export default defineBackground({
   type: 'module',
   main() {
+    const alarmsApi = (browser as unknown as {
+      alarms?: {
+        onAlarm?: { addListener: (listener: (alarm: { name: string }) => void) => void };
+      };
+    }).alarms;
+    alarmsApi?.onAlarm?.addListener((alarm) => {
+      if (!alarm.name.startsWith('marksvault-ai-')) return;
+      void getAiClassificationJob()
+        .then(job => {
+          if (job && (job.state === 'queued' || job.state === 'classifying' || job.state === 'paused')) {
+            return runAiClassificationJob(job);
+          }
+          return undefined;
+        })
+        .catch(error => console.error('[AI classification alarm] 任务恢复失败:', error));
+    });
+
     // 监听安装事件
     browser.runtime.onInstalled.addListener(async (details) => {
       if (details.reason === 'install') {
@@ -99,6 +125,8 @@ export default defineBackground({
     // 监听浏览器启动事件
     browser.runtime.onStartup.addListener(async () => {
       console.log('浏览器启动，初始化 MarksVault 服务...');
+
+      await markAiClassificationRecoverable();
 
       // 使用统一的服务初始化函数
       if (!await ensureServicesInitializedOrLog('onStartup')) {
@@ -167,6 +195,49 @@ export default defineBackground({
           error: error instanceof Error ? error.message : String(error),
         });
       };
+
+      if (message.type === 'START_AI_CLASSIFICATION') {
+        void (async () => {
+          const job = await startAiClassificationJob();
+          return { success: true, job };
+        })()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'GET_AI_CLASSIFICATION_JOB') {
+        // Reading task state must be side-effect free. Recovery is performed
+        // only during browser startup, not when a Popup is reopened.
+        void (async () => ({ success: true, job: await getAiClassificationJob() }))()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'GET_AI_CLASSIFICATION_PREVIEW' || message.type === 'GET_AI_PREVIEW') {
+        void (async () => ({ success: true, plan: await getLastAiClassificationPlan() }))()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'RESUME_AI_CLASSIFICATION' || message.type === 'RETRY_AI_CLASSIFICATION' || message.type === 'RETRY_AI_BATCH') {
+        void (async () => {
+          const job = await resumeAiClassificationJob();
+          return { success: true, job };
+        })()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'CANCEL_AI_CLASSIFICATION') {
+        void (async () => ({ success: true, job: await cancelAiClassificationJob() }))()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
 
       if (message.type === 'EXECUTE_SELECTIVE_PUSH') {
         void (async () => {

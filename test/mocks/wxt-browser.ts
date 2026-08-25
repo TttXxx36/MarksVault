@@ -71,6 +71,7 @@ let nextWindowId = 1;
 export const browser = {
   runtime: {
     getURL: (path: string) => `chrome-extension://__jest__${path}`,
+    sendMessage: async () => ({ success: true }),
   },
   storage: {
     local: createStorageArea(localStore),
@@ -86,6 +87,10 @@ export const browser = {
     create: async () => ({ id: nextWindowId++ }),
     remove: async () => undefined,
   },
+  alarms: {
+    create: async () => undefined,
+    onAlarm: createEvent(),
+  },
   bookmarks: {
     getTree: async () => [],
     getChildren: async () => [],
@@ -97,4 +102,3 @@ export const browser = {
     move: async () => ({ id: '0' }),
   },
 } as any;
-

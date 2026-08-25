@@ -48,28 +48,47 @@ export interface AiClassificationResponse {
   assignments: AiAssignment[];
 }
 
-export type AiBatchState = 'pending' | 'running' | 'completed' | 'failed';
+export type AiBatchState = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type AiClassificationJobState =
+  | 'queued'
+  | 'classifying'
+  | 'paused'
+  | 'awaiting_review'
+  | 'failed'
+  | 'cancelled';
 
 export interface AiBatchProgress {
   batchId: string;
   bookmarkIds: string[];
+  inputHash?: string;
   state: AiBatchState;
   attempts: number;
+  errorCode?: string;
+  splitDepth?: number;
+  startedAt?: number;
   completedAt?: number;
   error?: string;
 }
 
 export interface AiClassificationJob {
+  schemaVersion: 1;
+  promptContractVersion: 1;
   id: string;
   createdAt: number;
   updatedAt: number;
   endpoint: string;
   model: string;
   bookmarkIds: string[];
+  bookmarks: AiBookmarkInput[];
   batches: AiBatchProgress[];
   categories: AiCategory[];
   assignments: AiAssignment[];
-  state: 'classifying' | 'awaiting_review' | 'cancelled' | 'failed';
+  state: AiClassificationJobState;
+  activeBatchId?: string;
+  cancelRequested?: boolean;
+  resumeAvailable?: boolean;
+  errorCode?: string;
   error?: string;
 }
 

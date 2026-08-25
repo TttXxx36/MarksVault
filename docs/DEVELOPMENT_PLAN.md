@@ -24,7 +24,7 @@
 
 ### 2.1 发布顺序
 
-开发分成两个公开版本，不允许把所有风险一次性塞进同一个版本：
+核心开发分成两个公开版本；在 v2.0.0 之后继续使用小步维护版本，不允许把所有风险一次性塞进同一个版本：
 
 1. `v1.6.0`：安全与兼容版本。
    - 修复恢复、回滚、配置导入、权限和 GitHub API 风险；
@@ -34,6 +34,17 @@
    - 支持用户配置 AI 请求地址、认证方式、API Key 和模型；
    - 支持分类生成、批量分配、预览、确认、执行、取消和回滚；
    - 保持不配置 AI 时的全部原有功能可用。
+3. `v2.0.1`：AI 稳定性与后台任务修复版本。
+   - 修复自定义提示词覆盖 JSON 输出约束的问题；
+   - 修复多 JSON、尾随字符、reasoning 拼接导致的解析异常；
+   - 将 AI 分类任务移入后台，弹出窗口关闭后继续执行；
+   - 增加可恢复的分类任务草稿、失败批次重试和模型列表配置草稿；
+   - 不改变 v2.0.0 已有的书签写入安全边界。
+4. `v2.1.0`：书签快照与历史恢复版本。
+   - 每次 AI 分类执行前自动创建本地命名书签快照；
+   - 支持手动快照、快照列表、导出/导入和保留策略；
+   - 恢复前显示差异，默认跳过用户后来修改的项目；
+   - 保留“撤销最近一次 AI 分类”和“恢复历史书签快照”两条入口。
 
 ### 2.3 用户确认的 AI 供应商配置边界
 
@@ -1497,5 +1508,254 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 - CI 对三端执行完整质量门槛；
 - v1.6 和 v2.0 都有可验证、可回退的独立发布产物；
 - 文档描述与实际代码、权限、隐私和 Release 完全一致。
+
+## 18. 2026-08 用户确认的 v2.0.1/v2.1.0 修复增量
+
+本节是对 v2.0.0 发布后实际使用反馈的冻结规格。它覆盖已确认的提示词、JSON 解析、后台任务、配置草稿和书签历史恢复决策；后续执行代理不得用“实现细节”重新解释这些产品边界。
+
+### 18.1 已确认的产品决策
+
+1. 最近一次 AI 分类继续提供快捷“撤销”；同时增加可选择的历史“书签快照恢复”。两者不是同一个入口。
+2. 每次 AI 分类确认执行前自动生成一个本地书签快照，默认使用时间戳命名，用户可以修改名称；同时允许用户手动创建快照。
+3. 快照只保存在 `storage.local`/IndexedDB，不自动上传 GitHub；自动快照默认保留最近 20 个，命名快照不自动删除。必须提供 JSON 导出/导入和容量提示。
+4. 历史恢复先显示差异，默认跳过快照之后被用户修改、删除或新增的项目；不得无确认强制覆盖当前书签树。
+5. 用户输入是“补充提示词”，始终与内置 JSON、安全和字段约束共同生效；界面提供恢复默认提示词的操作。
+6. 认证方式保留，但默认使用 Bearer；API Key Header 和 None 收入折叠的高级设置，并解释三者的 HTTP 行为。
+7. AI 设置保留独立的本地配置草稿。获取模型列表前先保存草稿，弹出窗口被回收后重新打开仍能恢复；“保存配置”仍是正式提交动作。
+8. 非法 JSON 只允许一次 JSON 修复请求；再次失败不得猜测执行。已完成批次不重复请求，失败批次可以单独重试。
+9. 默认批量大小调整为 20；解析失败的批次可一次性拆成 10 条子批次处理，仍失败则保留为失败批次，禁止无限自动重试。
+10. Responses API 在供应商支持时发送结构化 JSON 约束；供应商拒绝后回退到 JSON-only 提示词。只使用最终 assistant message，不把 reasoning 和无关输出拼接进分类文本。
+11. AI 分类是一个后台 AI 分类任务，不依赖弹出窗口存活；同一时间只允许一个活动任务。弹出窗口关闭后继续执行，重新打开时显示进度。
+12. AI 分类任务草稿同时保存运行中任务和已完成、待确认的预览草稿。浏览器重启后任务标记为可恢复，由用户明确点击继续；不得自动重新发送书签数据。
+13. 取消只在当前 API 请求结束和批次状态落盘后生效；已完成批次保留，未完成批次可以以后继续。
+14. 任务页面显示总进度、当前批次、失败批次、继续、取消、重试和查看预览操作。基础版本不依赖浏览器通知。
+
+### 18.2 v2.0.1：稳定性与后台任务
+
+#### HOT-001 补充提示词与输出契约
+
+目标：彻底避免用户填写自定义提示词后删除内置 JSON 约束。
+
+修改范围：
+
+- `src/services/ai-service.ts`
+- `src/popup/components/SettingsView/AiSettingsCard.tsx`
+- `src/types/ai.ts`
+
+要求：
+
+- 将内置系统约束拆成不可覆盖的安全/格式段和用户可编辑的补充段；两段按固定顺序合并。
+- 明确要求唯一 JSON 对象、`categories`、`assignments`、输入 ID 覆盖率、置信度范围和未知分类处理。
+- UI 标签改为“补充提示词（可选）”，增加“恢复默认”按钮和格式说明。
+- 任务记录保存 prompt contract 版本，不保存 API Key。
+- 对提示词长度、控制字符和潜在模板语法做运行时限制；不得引入 `eval` 或可执行模板。
+
+验收：
+
+- 空补充提示词仍使用默认约束。
+- 任意补充提示词都不能删除 JSON 契约。
+- 书签标题、URL 中的提示词注入样本不能改变输出协议。
+
+#### HOT-002 JSON 提取、修复和错误模型
+
+目标：修复 `Unexpected non-whitespace character after JSON`，并将底层解析异常转换为可行动的批次错误。
+
+修改范围：
+
+- `src/services/ai-service.ts`
+- `src/types/ai.ts`
+- `src/services/ai-service.test.ts`
+
+实现规则：
+
+1. 先从供应商响应中选择最终 assistant 文本；优先级为 `output_text`、最终 message content、最终 output message，不拼接 reasoning 或其他输出项。
+2. 解析器必须识别字符串转义、嵌套对象、数组和代码围栏，找到唯一完整 JSON 对象。
+3. 如果存在多个完整 JSON 对象、尾随 JSON、截断 JSON 或无法确定唯一对象，返回结构化 `INVALID_JSON`，不得直接暴露 JavaScript `SyntaxError`。
+4. 对当前批次只执行一次 JSON 修复请求。修复请求只包含该批次的原始输入和格式要求，不携带 API Key 到提示词。
+5. 修复仍失败时将批次标为 `failed`，保留已完成批次，并按 HOT-003 的拆分策略处理；不得把不确定结果写入书签。
+6. 错误摘要只包含协议、阶段、批次 ID、书签数量、响应类型和安全截断的错误信息；不得包含 API Key，默认不包含完整书签内容。
+
+必须加入的 fixture：
+
+- 合法单对象 JSON；
+- Markdown 代码围栏；
+- JSON 前后有普通说明；
+- 两个 JSON 对象拼接；
+- 合法 JSON 后追加非空字符；
+- reasoning + final message；
+- 截断 JSON；
+- 大括号出现在字符串值中；
+- `choices[0].text`、`choices[0].message.content`、Responses output message 等兼容形态。
+
+#### HOT-003 批次容量、拆分和恢复
+
+目标：降低大书签库的输出长度和单批失败影响。
+
+要求：
+
+- 默认 `batchSize` 改为 20，用户可在既有合法范围内调整。
+- 解析失败的 20 条批次在一次修复请求后仍失败时，最多拆成 10 条子批次一次；子批次分别持久化状态。
+- 网络超时、429、5xx 继续使用有限重试；认证、权限、模型不存在和格式失败不能套用网络重试。
+- 每个批次保存 `pending/running/completed/failed/cancelled`、attempts、错误类别、开始/完成时间和输入 ID 哈希。
+- 任务恢复只跳过已完成批次；失败批次由用户点击“重试失败批次”或按已确认的拆分策略继续。
+- 任务结果合并必须重新执行 ID 覆盖率、重复 assignment、未知分类、分类数量上限和低置信度校验。
+
+#### HOT-004 后台 AI 分类任务
+
+目标：弹出窗口关闭、切换标签页或点击浏览器其他界面后，AI 分类仍能继续。
+
+推荐结构：
+
+- Popup 只负责创建/查看/确认任务，不持有长时间分类 Promise。
+- `src/entrypoints/background.ts` 增加 AI 任务消息处理：`START_AI_CLASSIFICATION`、`GET_AI_CLASSIFICATION_JOB`、`RESUME_AI_CLASSIFICATION`、`CANCEL_AI_CLASSIFICATION`、`RETRY_AI_BATCH`、`GET_AI_PREVIEW`。
+- 后台每次只处理一个批次，批次开始前和完成/失败后都写入持久状态；不要依赖一个跨几十个批次的长 Promise。
+- 使用浏览器支持的后台唤醒机制（消息事件和 alarms）推进下一批；Service Worker 被回收后可以从最后一个已落盘批次恢复。
+- 使用任务租约保证同一时间只有一个活动 AI 分类任务；重复点击只打开已有任务，不创建并行任务。
+- API Key 只在后台请求时从 `storage.local` 读取并放入认证头，不写入任务草稿、快照、日志或消息 payload。
+- 任务完成后保存 AI 分类预览草稿，等待用户确认；后台不得自动调用 `browser.bookmarks.move`。
+
+任务状态至少包括：
+
+`queued → running → awaiting_review → applying → applied`，以及 `paused`、`failed`、`cancelled`、`rolled_back` 分支。
+
+浏览器重启后：
+
+- `running` 任务转换为 `paused`/`resumable`；
+- 不自动调用外部 AI；
+- 用户点击“继续分类”后从已完成批次继续；
+- 原书签树发生变化时重新校验输入快照，必要时要求重新生成预览。
+
+#### HOT-005 AI 分类任务草稿与任务页面
+
+目标：用户可以离开插件页面，并在回来后看到准确进度。
+
+修改范围：
+
+- `src/popup/components/BookmarksView/AiClassifyButton.tsx`
+- `src/popup/components/TasksView/`
+- `src/types/ai.ts`
+- `src/services/ai-classification-service.ts`
+
+要求：
+
+- 将“正在分类”“可恢复”“失败批次”“等待预览确认”“已完成”“已取消”分别显示。
+- 页面显示总书签数、已完成数、失败数、当前批次、重试次数、目标服务域名和下一步操作。
+- 关闭 Popup 不取消任务；Popup 重开时通过 `storage.onChanged` 和一次性读取恢复视图。
+- 取消按钮只设置取消请求，在当前 API 请求结束、状态落盘后停止。
+- 预览草稿可以重新打开、编辑分类名称和确认执行；关闭窗口不能使预览丢失。
+- 同一时间只能有一个活动任务；已有活动任务时点击 AI 图标直接进入任务详情。
+
+#### HOT-006 AI 配置草稿与获取模型列表
+
+要求：
+
+- API 地址、协议、认证方式、模型、补充提示词等编辑值做本地草稿保存，采用防抖写入。
+- “获取模型列表”先保存草稿，再从草稿读取配置发起请求。
+- Popup 被回收后，重新打开设置页面恢复草稿；草稿和正式配置都不进入 `storage.sync`、导出或 GitHub 备份。
+- 正式“保存配置”继续执行完整字段校验，并把 API Key 单独存入 `storage.local`。
+- 认证方式默认 Bearer；高级设置折叠显示 API Key Header 和 None，并解释请求头行为。
+- 获取模型列表失败时不清空任何输入，错误显示协议、请求阶段和安全摘要。
+
+#### HOT-007 v2.0.1 迁移、测试和发布
+
+迁移：
+
+- 读取旧版 `ai_provider_config` 和 `ai_provider_secret`；没有任务草稿时创建空状态。
+- 将旧的单槽 `ai_classification_job` 转换为版本化任务记录；不能把旧的 API Key 复制到任务对象。
+- 旧的 `ai_last_classification_plan` 继续作为最近一次撤销入口，直到 v2.1.0 快照迁移完成。
+
+测试：
+
+- fake fetch 覆盖 JSON 修复、结构化输出拒绝、429/5xx、超时、认证失败、权限拒绝和模型不存在。
+- 模拟 Popup 卸载后后台继续处理，验证任务不依赖 React 组件 Promise。
+- 模拟 Service Worker 回收/重新初始化，从最后已完成批次继续。
+- 验证单任务租约、批次取消、失败批次重试和重复点击不会创建并行请求。
+- Chrome、Firefox、Edge 构建和 Firefox `web-ext lint` 必须通过；不使用真实用户 API Key 或书签。
+
+发布：
+
+- `v2.0.1` 同时生成 Chrome、Firefox、Edge 产物和 SHA256 校验文件。
+- Release 说明明确：Popup 可关闭、任务会后台继续、浏览器重启后需用户继续、API Key 仍为 local-only。
+
+### 18.3 v2.1.0：书签快照与历史恢复
+
+#### SNAP-001 快照数据模型和存储
+
+目标：提供“撤销最近一次 AI 分类”之外的多节点历史。
+
+数据模型至少包括：
+
+- `snapshotId`、用户名称、创建时间、来源（AI 分类前/手动）、版本号；
+- 完整书签树快照或可验证的完整备份引用；
+- AI 分类计划 ID、受影响书签和原始 `parentId/index` delta；
+- 根目录、节点数量、字节大小、内容哈希和校验状态；
+- 是否自动快照、是否受保留策略保护。
+
+大快照和任务批次结果使用 IndexedDB；`storage.local` 只保存索引、当前任务 ID、最近状态和迁移标记。任何快照都不得包含 AI Key 或 GitHub Token。
+
+#### SNAP-002 自动/手动创建和保留策略
+
+- 用户确认 AI 分类执行前，先完成快照写入和校验；快照失败则禁止书签移动。
+- 默认名称为“AI 分类前 - YYYY-MM-DD HH-mm-ss”，用户可以在保存前编辑。
+- 支持设置页面手动创建命名快照。
+- 自动快照默认保留最近 20 个；命名快照不自动删除。
+- 达到容量限制时，先提示用户导出/删除；不能静默删除受保护快照。
+- 提供快照 JSON 导出/导入，导入先校验 schema、节点数量、URL 协议、深度和哈希。
+
+#### SNAP-003 历史列表和恢复预览
+
+- 任务页面增加快照列表、搜索、按名称/时间/来源筛选和详情。
+- 恢复前显示当前书签树与目标快照的新增、删除、移动、重命名和冲突数量。
+- 默认只恢复仍可安全匹配的节点；快照之后被用户修改的节点进入跳过/人工确认区。
+- 节点优先按稳定 ID 匹配，ID 不存在时使用受限的标题+URL+路径指纹；不得仅凭标题猜测匹配。
+- 恢复计划必须经过用户确认，并写入新的恢复 journal；失败可继续处理其他独立节点。
+- 默认不删除快照之后新增的书签、不删除非空文件夹、不修改 URL。
+
+#### SNAP-004 恢复、回滚和故障注入
+
+- 恢复前自动创建“恢复前”快照，形成可回退链。
+- 恢复执行使用书签写入租约、逐项 journal 和幂等检查。
+- 中途中断后显示结果不确定，不自动重试写操作；用户查看 journal 后选择继续或回滚。
+- 回滚只针对本次恢复实际修改且未被用户再次修改的节点。
+- 测试覆盖删除、移动、重命名、重复 URL、ID 变化、文件夹冲突、部分写失败、浏览器重启和容量不足。
+
+#### SNAP-005 v2.1.0 发布门槛
+
+- v2.0.1 的所有测试保持通过。
+- Chrome、Firefox、Edge 均支持快照索引、创建、列表、导出、导入、差异预览和恢复。
+- 至少完成 20,000 节点规模的性能/容量基线，不使用真实用户数据。
+- Release 说明明确：历史恢复默认选择性恢复，不是无条件覆盖；快照默认本地保存。
+
+### 18.4 实施顺序与提交切片
+
+执行代理必须按以下顺序，每个切片独立构建和测试：
+
+1. `fix(ai): preserve mandatory json contract for supplemental prompts`
+2. `fix(ai): parse single response object and repair invalid batches`
+3. `refactor(ai): persist adaptive batch checkpoints`
+4. `feat(ai): move classification orchestration to background`
+5. `feat(ai): add resumable classification task drafts and progress view`
+6. `fix(ai): persist settings draft before model discovery`
+7. `refactor(ai): collapse advanced authentication settings`
+8. `release: prepare v2.0.1`
+9. `feat(bookmarks): add local named snapshot index`
+10. `feat(bookmarks): add snapshot diff and conflict-safe restore`
+11. `test(bookmarks): add snapshot failure-injection matrix`
+12. `release: prepare v2.1.0`
+
+任何切片都不得同时修改 GitHub 备份核心、Firefox manifest 和 AI 恢复核心，除非任务依赖明确记录在提交说明中。
+
+### 18.5 新增验收清单
+
+- 用户填写自定义补充提示词后，模型仍必须返回唯一 JSON 对象。
+- 返回两个 JSON、JSON 后有尾随字符、reasoning 拼接或截断时，不会执行书签写入。
+- 40 条以上书签可以分批处理；Popup 关闭后任务仍继续。
+- 浏览器重启后不会自动调用 AI，但可以从最后完成批次继续。
+- 已完成批次不会重复请求，失败批次可以单独重试。
+- 获取模型列表时 Popup 被回收，配置草稿和 API Key 仍能恢复。
+- 同时只能有一个 AI 分类任务。
+- AI 分类执行前一定存在可验证的书签快照；快照失败时不允许移动书签。
+- 历史恢复默认展示差异并跳过冲突，不会静默覆盖用户后续修改。
+- Chrome、Firefox、Edge 的构建、单元测试、契约测试和 Firefox lint 均通过。
 
 

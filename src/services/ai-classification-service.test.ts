@@ -1,12 +1,14 @@
 import { browser } from 'wxt/browser';
 import { AiClassificationPlan } from '../types/ai';
-import { rollbackAiClassificationPlan } from './ai-classification-service';
+import { rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
+import { createDefaultAiProviderConfig, saveAiProviderConfig } from './ai-service';
 
 describe('ai-classification rollback safety', () => {
   const bookmarks = browser.bookmarks as any;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
+    await browser.storage.local.clear();
     // The shared browser fixture uses lightweight async functions; replace only the
     // methods this test needs so assertions and per-node behavior remain isolated.
     bookmarks.get = jest.fn();
@@ -43,5 +45,111 @@ describe('ai-classification rollback safety', () => {
       parentId: 'original-folder',
       index: 1,
     });
+  });
+
+  test('starts a persisted background classification job without requiring the Popup to stay mounted', async () => {
+    bookmarks.getTree = jest.fn().mockResolvedValue([{
+      id: 'root',
+      title: '',
+      children: [{
+        id: 'toolbar',
+        title: 'Bookmarks Toolbar',
+        children: [{ id: 'b1', title: 'Example', url: 'https://example.com', parentId: 'toolbar', index: 0 }],
+      }],
+    }]);
+    await saveAiProviderConfig({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      apiKey: 'fake-secret',
+    });
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        output_text: JSON.stringify({
+          categories: [{ name: '其他' }],
+          assignments: [{ bookmarkId: 'b1', categoryName: '其他', confidence: 0.4 }],
+        }),
+      }),
+    });
+
+    const queued = await startAiClassificationJob();
+    expect(queued.state).toBe('queued');
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const completed = await getAiClassificationJob();
+    expect(completed?.state).toBe('awaiting_review');
+  });
+
+  test('marks an interrupted classifying job as resumable instead of restarting it silently', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      id: 'job-interrupted',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'classifying',
+    };
+    await saveAiClassificationJob(job);
+    const recovered = await markAiClassificationRecoverable();
+    expect(recovered?.state).toBe('paused');
+    expect(recovered?.resumeAvailable).toBe(true);
+  });
+
+  test('persists one background batch at a time and resumes from the checkpoint', async () => {
+    bookmarks.getTree = jest.fn().mockResolvedValue([{
+      id: 'root',
+      title: '',
+      children: [{
+        id: 'toolbar',
+        title: 'Bookmarks Toolbar',
+        children: Array.from({ length: 21 }, (_, index) => ({
+          id: `b${index}`,
+          title: `Example ${index}`,
+          url: `https://example.com/${index}`,
+          parentId: 'toolbar',
+          index,
+        })),
+      }],
+    }]);
+    const config = await saveAiProviderConfig({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      apiKey: 'fake-secret',
+    });
+    const responseFor = (ids: string[]) => JSON.stringify({ output_text: JSON.stringify({
+      categories: [{ name: '其他' }],
+      assignments: ids.map(bookmarkId => ({ bookmarkId, categoryName: '其他', confidence: 0.4 })),
+    }) });
+    (globalThis as any).fetch = jest.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => responseFor(Array.from({ length: 20 }, (_, index) => `b${index}`)) })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => responseFor(['b20']) });
+
+    const queued = await startAiClassificationJob(config);
+    expect(queued.batches.every(batch => batch.state === 'pending')).toBe(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    const checkpoint = await getAiClassificationJob();
+    expect(checkpoint?.state).toBe('queued');
+    expect(checkpoint?.batches.filter(batch => batch.state === 'completed')).toHaveLength(1);
+    await runAiClassificationJob(checkpoint || undefined);
+    const completed = await getAiClassificationJob();
+    expect(completed?.state).toBe('awaiting_review');
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not leave a stale active-run lock after an early startup failure', async () => {
+    await expect(runAiClassificationJob()).rejects.toThrow('没有可执行的 AI 分类任务');
+    await expect(runAiClassificationJob()).rejects.toThrow('没有可执行的 AI 分类任务');
   });
 });

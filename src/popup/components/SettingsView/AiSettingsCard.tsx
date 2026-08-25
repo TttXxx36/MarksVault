@@ -8,6 +8,7 @@ import Alert from '@mui/material/Alert';
 import Switch from '@mui/material/Switch';
 import FormControlLabel from '@mui/material/FormControlLabel';
 import Stack from '@mui/material/Stack';
+import Collapse from '@mui/material/Collapse';
 import InputAdornment from '@mui/material/InputAdornment';
 import IconButton from '@mui/material/IconButton';
 import VisibilityIcon from '@mui/icons-material/Visibility';
@@ -15,7 +16,7 @@ import VisibilityOffIcon from '@mui/icons-material/VisibilityOff';
 import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import DashboardCard from '../shared/DashboardCard';
 import { AiProviderConfig } from '../../../types/ai';
-import { createDefaultAiProviderConfig, getAiProviderConfig, listAiModels, saveAiProviderConfig, testAiConnection } from '../../../services/ai-service';
+import { createDefaultAiProviderConfig, getAiProviderConfig, getAiProviderDraft, listAiModels, saveAiProviderConfig, saveAiProviderDraft, testAiConnection } from '../../../services/ai-service';
 import { isFirefox } from '../../../utils/browser-compat';
 
 const AiSettingsCard: React.FC = () => {
@@ -25,11 +26,32 @@ const AiSettingsCard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [showAdvancedAuth, setShowAdvancedAuth] = useState(false);
+  const [draftReady, setDraftReady] = useState(false);
   const [message, setMessage] = useState<{ severity: 'success' | 'error' | 'info'; text: string } | null>(null);
 
   useEffect(() => {
-    void getAiProviderConfig().then(setConfig).catch(() => setMessage({ severity: 'error', text: '加载 AI 配置失败' })).finally(() => setLoading(false));
+    void Promise.all([getAiProviderConfig(), getAiProviderDraft()])
+      .then(([saved, draft]) => {
+        setConfig(draft || saved);
+        setShowAdvancedAuth((draft || saved).authType !== 'bearer');
+        setDraftReady(true);
+      })
+      .catch(() => setMessage({ severity: 'error', text: '加载 AI 配置失败' }))
+      .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!draftReady || loading) return;
+    const timer = window.setTimeout(() => {
+      void saveAiProviderDraft(config).catch(() => undefined);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [config, draftReady, loading]);
+
+  useEffect(() => {
+    if (config.authType !== 'bearer') setShowAdvancedAuth(true);
+  }, [config.authType]);
 
   const update = <K extends keyof AiProviderConfig>(key: K, value: AiProviderConfig[K]) => {
     setConfig(current => ({ ...current, [key]: value }));
@@ -69,7 +91,9 @@ const AiSettingsCard: React.FC = () => {
     setTesting(true);
     setMessage(null);
     try {
-      const result = await listAiModels(config);
+      const draft = await saveAiProviderDraft(config);
+      setConfig(draft);
+      const result = await listAiModels(draft);
       setModels(result);
       setMessage({ severity: 'info', text: result.length ? '模型列表已更新' : '服务未返回模型列表，可手工填写模型' });
     } catch (error) {
@@ -139,30 +163,45 @@ const AiSettingsCard: React.FC = () => {
           <MenuItem value="chat-completions">Chat Completions</MenuItem>
           <MenuItem value="custom">自定义兼容请求</MenuItem>
         </TextField>
-        <TextField
-          select
+        <Button
           size="small"
-          label="认证方式"
-          value={config.authType}
-          onChange={event => update('authType', event.target.value as AiProviderConfig['authType'])}
-          fullWidth
-          disabled={loading || saving || testing}
+          variant="text"
+          onClick={() => setShowAdvancedAuth(value => !value)}
+          sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
         >
-          <MenuItem value="bearer">Authorization: Bearer</MenuItem>
-          <MenuItem value="api-key-header">自定义 API Key Header</MenuItem>
-          <MenuItem value="none">不发送认证头</MenuItem>
-        </TextField>
-        {config.authType === 'api-key-header' && (
-          <TextField
-            size="small"
-            label="API Key Header"
-            value={config.apiKeyHeader}
-            onChange={event => update('apiKeyHeader', event.target.value)}
-            placeholder="X-API-Key"
-            fullWidth
-            disabled={loading || saving || testing}
-          />
-        )}
+          {showAdvancedAuth ? '收起认证设置' : `高级认证设置（当前：${config.authType === 'bearer' ? 'Bearer' : config.authType === 'api-key-header' ? '自定义 Header' : '不发送认证头'}）`}
+        </Button>
+        <Collapse in={showAdvancedAuth} timeout="auto" unmountOnExit>
+          <Stack spacing={1}>
+            <TextField
+              select
+              size="small"
+              label="认证方式"
+              value={config.authType}
+              onChange={event => update('authType', event.target.value as AiProviderConfig['authType'])}
+              fullWidth
+              disabled={loading || saving || testing}
+            >
+              <MenuItem value="bearer">Authorization: Bearer</MenuItem>
+              <MenuItem value="api-key-header">自定义 API Key Header</MenuItem>
+              <MenuItem value="none">不发送认证头</MenuItem>
+            </TextField>
+            {config.authType === 'api-key-header' && (
+              <TextField
+                size="small"
+                label="API Key Header"
+                value={config.apiKeyHeader}
+                onChange={event => update('apiKeyHeader', event.target.value)}
+                placeholder="X-API-Key"
+                fullWidth
+                disabled={loading || saving || testing}
+              />
+            )}
+            <Typography variant="caption" color="text.secondary">
+              Bearer 使用 Authorization 请求头；自定义 Header 适用于使用 X-API-Key 等协议的服务；None 不发送 API Key。
+            </Typography>
+          </Stack>
+        </Collapse>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <TextField
             size="small"
@@ -191,7 +230,7 @@ const AiSettingsCard: React.FC = () => {
         )}
         <TextField
           size="small"
-          label="优化提示词（可选）"
+          label="补充提示词（可选）"
           value={config.systemPrompt}
           onChange={event => update('systemPrompt', event.target.value)}
           multiline
@@ -200,6 +239,17 @@ const AiSettingsCard: React.FC = () => {
           fullWidth
           disabled={loading || saving || testing}
         />
+        <Typography variant="caption" color="text.secondary">
+          自定义内容会追加到内置 JSON 输出和安全约束之后，不会覆盖必须的分类格式。输入内容会自动保存为本地草稿。
+        </Typography>
+        <Button
+          size="small"
+          variant="text"
+          onClick={() => update('systemPrompt', '')}
+          sx={{ alignSelf: 'flex-start', textTransform: 'none' }}
+        >
+          恢复默认提示词
+        </Button>
         <Box sx={{ display: 'flex', gap: 1 }}>
           <TextField
             size="small"

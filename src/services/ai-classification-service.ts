@@ -7,7 +7,7 @@ import {
   AiClassificationResponse,
   AiProviderConfig,
 } from '../types/ai';
-import { classifyBookmarks, getAiProviderConfig, AiClassificationOptions } from './ai-service';
+import { AI_PROMPT_CONTRACT_VERSION, classifyBookmarks, getAiProviderConfig, AiClassificationOptions } from './ai-service';
 
 type NativeBookmarkNode = {
   id: string;
@@ -19,8 +19,12 @@ type NativeBookmarkNode = {
   children?: NativeBookmarkNode[];
 };
 
-const PLAN_KEY = 'ai_last_classification_plan';
-const JOB_KEY = 'ai_classification_job';
+export const PLAN_KEY = 'ai_last_classification_plan';
+export const JOB_KEY = 'ai_classification_job';
+
+let activeAiRun: Promise<AiClassificationJob> | null = null;
+let activeAiController: AbortController | null = null;
+let activeAiCancelRequested = false;
 
 const createId = (): string => {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -69,87 +73,246 @@ export async function collectAiBookmarks(): Promise<AiBookmarkInput[]> {
   return collectLeaves(tree);
 }
 
-export async function createAiClassificationPlan(configInput?: AiProviderConfig): Promise<AiClassificationPlan> {
+const getBatchId = (offset: number, batch: AiBookmarkInput[]): string => {
+  const first = batch[0]?.id || 'empty';
+  const last = batch[batch.length - 1]?.id || 'empty';
+  return `${offset}:${batch.length}:${first}:${last}`;
+};
+
+const getInputHash = (batch: AiBookmarkInput[]): string => {
+  let hash = 2166136261;
+  for (const character of batch.map(item => item.id).join('\u0000')) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+};
+
+const createPendingBatches = (bookmarks: AiBookmarkInput[], batchSize: number) => {
+  const batches = [];
+  for (let offset = 0; offset < bookmarks.length; offset += batchSize) {
+    const batch = bookmarks.slice(offset, offset + batchSize);
+    batches.push({
+      batchId: getBatchId(offset, batch),
+      bookmarkIds: batch.map(item => item.id),
+      inputHash: getInputHash(batch),
+      state: 'pending' as const,
+      attempts: 0,
+      splitDepth: 0,
+    });
+  }
+  return batches;
+};
+
+const activeJobStates = new Set(['queued', 'classifying', 'paused', 'failed']);
+
+export async function createAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
   const config = configInput || await getAiProviderConfig();
   const bookmarks = await collectAiBookmarks();
   const bookmarkIds = bookmarks.map(item => item.id);
   const storedJob = await getAiClassificationJob();
-  const canResume = storedJob?.state === 'classifying'
+  const canReuse = Boolean(
+    storedJob
+    && activeJobStates.has(storedJob.state)
     && storedJob.endpoint === config.endpoint
     && storedJob.model === config.model
     && storedJob.bookmarkIds.length === bookmarkIds.length
-    && storedJob.bookmarkIds.every((id, index) => id === bookmarkIds[index]);
-  let job: AiClassificationJob = canResume && storedJob
-    ? storedJob
-    : {
-        id: createId(),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        endpoint: config.endpoint,
-        model: config.model,
-        bookmarkIds,
-        batches: [],
-        categories: [],
-        assignments: [],
-        state: 'classifying',
-      };
-  const options: AiClassificationOptions = {
-    resume: {
-      completedBatchIds: job.batches.filter(batch => batch.state === 'completed').map(batch => batch.batchId),
-      categories: job.categories,
-      assignments: job.assignments,
-    },
-    onBatchProgress: async (progress, response) => {
-      const existingIndex = job.batches.findIndex(batch => batch.batchId === progress.batchId);
-      if (existingIndex >= 0) job.batches[existingIndex] = progress;
-      else job.batches.push(progress);
-      if (response) {
-        job.categories = mergeCategories(job.categories, response);
-        job.assignments = mergeAssignments(job.assignments, response.assignments);
-      }
-      job.updatedAt = Date.now();
-      await saveAiClassificationJob(job);
-    },
-  };
-  await saveAiClassificationJob(job);
-  let result: AiClassificationResponse;
-  try {
-    result = await classifyBookmarks(config, bookmarks, options);
-  } catch (error) {
-    job = {
-      ...job,
-      updatedAt: Date.now(),
-      state: error instanceof Error && error.message.includes('取消') ? 'cancelled' : 'failed',
-      error: error instanceof Error ? error.message : 'AI 分类任务失败',
-    };
-    await saveAiClassificationJob(job);
-    throw error;
-  }
-  job = {
-    ...job,
+    && storedJob.bookmarkIds.every((id, index) => id === bookmarkIds[index]),
+  );
+  if (canReuse && storedJob) return storedJob;
+  const job: AiClassificationJob = {
+    schemaVersion: 1,
+    promptContractVersion: AI_PROMPT_CONTRACT_VERSION,
+    id: createId(),
+    createdAt: Date.now(),
     updatedAt: Date.now(),
-    state: 'awaiting_review',
-    categories: result.categories,
-    assignments: result.assignments,
-    error: undefined,
+    endpoint: config.endpoint,
+    model: config.model,
+    bookmarkIds,
+    bookmarks,
+    batches: createPendingBatches(bookmarks, config.batchSize),
+    categories: [],
+    assignments: [],
+    state: 'queued',
+    resumeAvailable: false,
   };
   await saveAiClassificationJob(job);
-  const assignedIds = new Set(result.assignments.map(item => item.bookmarkId));
-  const snapshot = bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
+  return job;
+}
+
+const buildPlanFromJob = async (job: AiClassificationJob): Promise<AiClassificationPlan> => {
+  const assignedIds = new Set(job.assignments.map(item => item.bookmarkId));
+  const snapshot = job.bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
   const plan: AiClassificationPlan = {
     id: createId(),
     createdAt: Date.now(),
-    categories: result.categories,
-    assignments: result.assignments,
+    categories: job.categories,
+    assignments: job.assignments,
     snapshot,
     skippedBookmarkIds: [],
-    unassignedBookmarkIds: bookmarks.filter(item => !assignedIds.has(item.id)).map(item => item.id),
+    unassignedBookmarkIds: job.bookmarks.filter(item => !assignedIds.has(item.id)).map(item => item.id),
     appliedBookmarkIds: [],
     appliedDestinationByBookmarkId: {},
     createdFolderIds: [],
     state: 'preview',
   };
   await browser.storage.local.set({ [PLAN_KEY]: plan });
+  return plan;
+};
+
+export async function runAiClassificationJob(jobInput?: AiClassificationJob): Promise<AiClassificationJob> {
+  if (activeAiRun) return activeAiRun;
+  activeAiRun = (async () => {
+    try {
+      const initialJob = jobInput || await getAiClassificationJob();
+      if (!initialJob) throw new Error('没有可执行的 AI 分类任务');
+      if (activeAiCancelRequested || initialJob.cancelRequested || initialJob.state === 'cancelled') return initialJob;
+      let job: AiClassificationJob = initialJob;
+      const config = await getAiProviderConfig();
+      if (config.endpoint !== job.endpoint || config.model !== job.model) {
+        throw new Error('AI 配置已变化，请重新生成分类任务');
+      }
+      activeAiController = new AbortController();
+      job = { ...job, state: 'classifying', cancelRequested: false, resumeAvailable: false, error: undefined, errorCode: undefined, updatedAt: Date.now() };
+      await saveAiClassificationJob(job);
+      if (activeAiCancelRequested) throw new Error('AI 分类已取消');
+      const options: AiClassificationOptions = {
+      signal: activeAiController.signal,
+      resume: {
+        completedBatchIds: job.batches.filter(batch => batch.state === 'completed').map(batch => batch.batchId),
+        completedBookmarkIds: job.batches
+          .filter(batch => batch.state === 'completed')
+          .flatMap(batch => batch.bookmarkIds),
+        categories: job.categories,
+        assignments: job.assignments,
+      },
+      maxBatches: 1,
+      onBatchProgress: async (progress, response) => {
+        const existingIndex = job.batches.findIndex(batch => batch.batchId === progress.batchId);
+        const batches = [...job.batches];
+        if (existingIndex >= 0) batches[existingIndex] = progress;
+        else batches.push(progress);
+        job = {
+          ...job,
+          batches,
+          activeBatchId: progress.state === 'running' ? progress.batchId : job.activeBatchId,
+          categories: response ? mergeCategories(job.categories, response) : job.categories,
+          assignments: response ? mergeAssignments(job.assignments, response.assignments) : job.assignments,
+          cancelRequested: activeAiCancelRequested || job.cancelRequested,
+          updatedAt: Date.now(),
+        };
+        await saveAiClassificationJob(job);
+        const alarmsApi = (browser as unknown as { alarms?: { create?: (name: string, details: { when: number }) => Promise<void> | void } }).alarms;
+        if (progress.state === 'completed' && alarmsApi?.create) {
+          void alarmsApi.create(`marksvault-ai-${job.id}`, { when: Date.now() + 1000 });
+        }
+      },
+      };
+      try {
+      const result = await classifyBookmarks(config, job.bookmarks, options);
+      if (activeAiCancelRequested || job.cancelRequested) throw new Error('AI 分类已取消');
+      const completedIds = new Set(job.batches
+        .filter(batch => batch.state === 'completed')
+        .flatMap(batch => batch.bookmarkIds));
+      const allBatchesCompleted = job.bookmarkIds.every(id => completedIds.has(id));
+      if (!allBatchesCompleted) {
+        job = {
+          ...job,
+          state: 'queued',
+          categories: result.categories,
+          assignments: result.assignments,
+          resumeAvailable: true,
+          updatedAt: Date.now(),
+        };
+        await saveAiClassificationJob(job);
+        return job;
+      }
+      job = {
+        ...job,
+        state: 'awaiting_review',
+        activeBatchId: undefined,
+        categories: result.categories,
+        assignments: result.assignments,
+        updatedAt: Date.now(),
+        resumeAvailable: false,
+        error: undefined,
+        errorCode: undefined,
+      };
+      await saveAiClassificationJob(job);
+      await buildPlanFromJob(job);
+      return job;
+      } catch (error) {
+      const cancelled = activeAiController?.signal.aborted || (error instanceof Error && error.message.includes('取消'));
+      job = {
+        ...job,
+        state: cancelled ? 'cancelled' : 'failed',
+        resumeAvailable: !cancelled,
+        updatedAt: Date.now(),
+        error: error instanceof Error ? error.message : 'AI 分类任务失败',
+        errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : undefined,
+      };
+      await saveAiClassificationJob(job);
+        throw error;
+      }
+    } finally {
+      activeAiController = null;
+      activeAiRun = null;
+      activeAiCancelRequested = false;
+    }
+  })();
+  return activeAiRun;
+}
+
+export async function startAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
+  const job = await createAiClassificationJob(configInput);
+  void runAiClassificationJob(job).catch(() => undefined);
+  return job;
+}
+
+export async function resumeAiClassificationJob(): Promise<AiClassificationJob> {
+  const job = await getAiClassificationJob();
+  if (!job) throw new Error('没有可恢复的 AI 分类任务');
+  if (!activeJobStates.has(job.state) && job.state !== 'cancelled') throw new Error('当前 AI 分类任务不可恢复');
+  const queued = { ...job, state: 'queued' as const, resumeAvailable: true, cancelRequested: false, updatedAt: Date.now() };
+  await saveAiClassificationJob(queued);
+  void runAiClassificationJob(queued).catch(() => undefined);
+  return queued;
+}
+
+export async function cancelAiClassificationJob(): Promise<AiClassificationJob | null> {
+  const job = await getAiClassificationJob();
+  if (!job) return null;
+  if (activeAiRun) {
+    activeAiCancelRequested = true;
+    if (activeAiController) activeAiController.abort();
+    const requested = { ...job, cancelRequested: true, updatedAt: Date.now() };
+    await saveAiClassificationJob(requested);
+    return requested;
+  }
+  const cancelled = { ...job, state: 'cancelled' as const, cancelRequested: true, resumeAvailable: true, updatedAt: Date.now() };
+  await saveAiClassificationJob(cancelled);
+  return cancelled;
+}
+
+export async function markAiClassificationRecoverable(): Promise<AiClassificationJob | null> {
+  const job = await getAiClassificationJob();
+  if (!job || job.state !== 'classifying') return job;
+  const paused: AiClassificationJob = {
+    ...job,
+    state: 'paused',
+    resumeAvailable: true,
+    updatedAt: Date.now(),
+    error: '后台服务已重新初始化，任务可以继续',
+  };
+  await saveAiClassificationJob(paused);
+  return paused;
+}
+
+export async function createAiClassificationPlan(configInput?: AiProviderConfig): Promise<AiClassificationPlan> {
+  const job = await createAiClassificationJob(configInput);
+  await runAiClassificationJob(job);
+  const plan = await getLastAiClassificationPlan();
+  if (!plan) throw new Error('AI 分类预览未生成');
   return plan;
 }
 
@@ -289,7 +452,20 @@ const mergeAssignments = (existing: AiAssignment[], next: AiAssignment[]): AiAss
 export async function getAiClassificationJob(): Promise<AiClassificationJob | null> {
   const data = await browser.storage.local.get(JOB_KEY) as Record<string, unknown>;
   const job = data[JOB_KEY];
-  return job && typeof job === 'object' ? job as AiClassificationJob : null;
+  if (!job || typeof job !== 'object') return null;
+  const raw = job as Partial<AiClassificationJob>;
+  return {
+    ...(raw as AiClassificationJob),
+    schemaVersion: 1,
+    promptContractVersion: AI_PROMPT_CONTRACT_VERSION,
+    bookmarks: Array.isArray(raw.bookmarks) ? raw.bookmarks : [],
+    bookmarkIds: Array.isArray(raw.bookmarkIds) ? raw.bookmarkIds : [],
+    batches: Array.isArray(raw.batches) ? raw.batches : [],
+    categories: Array.isArray(raw.categories) ? raw.categories : [],
+    assignments: Array.isArray(raw.assignments) ? raw.assignments : [],
+    state: raw.state || 'paused',
+    resumeAvailable: raw.resumeAvailable ?? false,
+  };
 }
 
 export async function saveAiClassificationJob(job: AiClassificationJob): Promise<void> {
