@@ -35,6 +35,15 @@
    - 支持分类生成、批量分配、预览、确认、执行、取消和回滚；
    - 保持不配置 AI 时的全部原有功能可用。
 
+### 2.3 用户确认的 AI 供应商配置边界
+
+- AI 服务不内置、代管或自动选择任何供应商，用户自行填写 API 地址、API Key、认证方式、协议、模型和优化提示词。
+- v2.0 UI 必须提供 API 地址、API Key、Responses API / Chat Completions / 自定义兼容请求、模型列表/手工模型、提示词、批量大小、分类数量、连接测试和启用开关。
+- API Key 只作为请求认证头发送给用户指定的服务；不得进入书签提示词、storage.sync、配置导出、GitHub 备份、任务快照或日志。
+- Responses API 和 Chat Completions 可根据服务根地址补齐常见 /v1 端点；custom 协议直接使用用户填写的地址和结构化 JSON 请求，不执行远程脚本或模板。
+- v2.0 当前实现先采用 storage.local 保存 secret；若后续增加 session-only 模式，必须单独完成迁移和清除测试。
+- Firefox v2 当前沿用 MV2 基线；任意自定义 AI origin 的动态权限策略需要单独确认，不得静默扩大权限范围。
+
 ### 2.2 实现策略
 
 - 采用增量重构，不做一次性推倒重写。
@@ -363,14 +372,14 @@ interface MarksVaultBookmarkBackupV2 {
 
 ### 7.3 AI 供应商配置
 
-第一版只承诺 OpenAI-compatible Chat Completions 协议，不宣称支持任意非兼容 API。
+根据用户确认，v2.0 支持用户自配置的 Responses API、Chat Completions 和自定义兼容请求；MarksVault 不内置或代管 API Key，也不把自定义 API 当作可执行脚本。
 
 ```ts
 interface AiProviderPublicConfig {
   id: string;
   name: string;
-  protocol: 'openai-compatible';
-  endpointUrl: string;        // 完整 POST 地址，例如 .../v1/chat/completions
+  protocol: 'responses' | 'chat-completions' | 'custom';
+  endpointUrl: string;        // 用户填写的服务根地址或完整兼容端点
   modelsUrl?: string;         // 可选模型列表地址
   model: string;
   authType: 'bearer' | 'api-key-header' | 'none';
