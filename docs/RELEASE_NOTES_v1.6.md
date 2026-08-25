@@ -12,7 +12,7 @@
 
 ## 兼容与隐私
 
-- Firefox 不使用 Chromium 专用 `_favicon` API。
+- Firefox 不使用 Chromium 专用 `_favicon` API，也不请求 Google favicon 服务；无图标时使用本地默认图标。
 - v1.6.0 不包含 AI 分类写入功能。
 - 不新增必需的任意站点访问权限。
 - Firefox 固定 ID 在提交 AMO 前仍需由发布者确认是否与最终上架 ID 一致。
