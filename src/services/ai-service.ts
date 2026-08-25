@@ -458,8 +458,28 @@ export async function classifyBookmarks(
       if (!mergedAssignments.has(assignment.bookmarkId)) mergedAssignments.set(assignment.bookmarkId, assignment);
     }
   }
+  let categories = Array.from(mergedCategories.values());
+  let allowedCategoryKeys = new Set(
+    categories.slice(0, config.maxCategories).map(category => category.name.toLocaleLowerCase()),
+  );
+  const hasOverflowAssignment = Array.from(mergedAssignments.values())
+    .some(assignment => !allowedCategoryKeys.has(assignment.categoryName.toLocaleLowerCase()));
+  if (hasOverflowAssignment) {
+    categories = categories.slice(0, Math.max(0, config.maxCategories - 1));
+    if (!categories.some(category => category.name === '其他')) categories.push({ name: '其他' });
+    allowedCategoryKeys = new Set(categories.map(category => category.name.toLocaleLowerCase()));
+    for (const assignment of mergedAssignments.values()) {
+      if (!allowedCategoryKeys.has(assignment.categoryName.toLocaleLowerCase())) {
+        assignment.categoryName = '其他';
+        assignment.confidence = Math.min(assignment.confidence, 0.2);
+        assignment.reason = assignment.reason || '模型返回的分类超出数量上限';
+      }
+    }
+  } else {
+    categories = categories.slice(0, config.maxCategories);
+  }
   return {
-    categories: Array.from(mergedCategories.values()).slice(0, config.maxCategories),
+    categories,
     assignments: Array.from(mergedAssignments.values()),
   };
 }
