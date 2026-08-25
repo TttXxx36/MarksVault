@@ -43,10 +43,15 @@ jobs:
       - name: Build Edge
         run: npm run build:edge
 
+      - name: Verify Manifest Contracts
+        run: npm run verify:manifests
+
+      - name: Firefox AMO Lint
+        run: npm run lint:firefox
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: marksvault-build
           path: .output
           retention-days: 7
-

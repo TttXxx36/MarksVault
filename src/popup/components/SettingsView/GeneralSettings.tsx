@@ -10,6 +10,7 @@ import NotificationsIcon from '@mui/icons-material/Notifications';
 import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import { UserSettings } from '../../../utils/storage-service'; // Fixed import path
 import DashboardCard from '../shared/DashboardCard';
+import AiSettingsCard from './AiSettingsCard';
 
 // 预定义主题颜色选项
 const THEME_COLORS = [
@@ -167,6 +168,8 @@ const GeneralSettings: React.FC<GeneralSettingsProps> = ({
                     </Typography>
                 </Box>
             </DashboardCard>
+
+            <AiSettingsCard />
         </Box>
     );
 };

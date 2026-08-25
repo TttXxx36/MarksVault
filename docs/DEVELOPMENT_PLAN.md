@@ -41,7 +41,7 @@
 - v2.0 UI 必须提供 API 地址、API Key、Responses API / Chat Completions / 自定义兼容请求、模型列表/手工模型、提示词、批量大小、分类数量、连接测试和启用开关。
 - API Key 只作为请求认证头发送给用户指定的服务；不得进入书签提示词、storage.sync、配置导出、GitHub 备份、任务快照或日志。
 - Responses API 和 Chat Completions 可根据服务根地址补齐常见 /v1 端点；custom 协议直接使用用户填写的地址和结构化 JSON 请求，不执行远程脚本或模板。
-- v2.0 当前实现先采用 storage.local 保存 secret；若后续增加 session-only 模式，必须单独完成迁移和清除测试。
+- 用户已确认 v2.0 采用 storage.local 持久保存 AI secret；不提供 session-only 模式，浏览器重启后配置仍保留，但 secret 永不进入 sync、导出、备份、任务快照或日志。
 - Firefox v2 当前沿用 MV2 基线；任意自定义 AI origin 的动态权限策略需要单独确认，不得静默扩大权限范围。
 
 ### 2.2 实现策略
@@ -403,7 +403,7 @@ interface AiProviderPublicConfig {
 - 禁止 `Cookie`、`Host`、`Origin`、`Referer` 等受保护或高风险自定义头；
 - API Key 与公开配置分离存储；
 - 任务快照只保存公开配置和 secret 引用 ID，不保存 secret 值；
-- 默认 session-only；用户选择持久化时明确提示本地扩展存储的风险。
+- 本项目发布策略已确认使用 local-only secret；设置页必须明确提示本地扩展存储风险，不得把 secret 复制到 sync 或导出文件。
 
 ### 7.4 AI 分类返回协议
 

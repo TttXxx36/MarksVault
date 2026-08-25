@@ -74,6 +74,8 @@ export default defineConfig({
       // Firefox 不支持 Chromium 的 `_favicon` 端点，也不需要 `favicon` 权限，避免 AMO 审核噪音
       permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
       host_permissions: ['https://api.github.com/*'],
+      // AI 供应商地址按运行时 origin 精确申请，不作为安装必需权限。
+      optional_host_permissions: ['https://*/*', 'http://*/*'],
       ...(isFirefox
         ? {
             // 固定 Firefox Add-on ID，保证 storage.sync 在升级和跨设备间保持同一命名空间。
@@ -81,10 +83,10 @@ export default defineConfig({
               gecko: {
                 id: 'marksvault@tttxxx36.github.io',
                 strict_min_version: '109.0',
-                // Firefox AMO 数据收集声明：核心备份读取书签；认证信息仅在用户选择 GitHub 备份时发送。
+                // Firefox AMO 数据收集声明：核心备份读取书签；认证/网站地址仅在用户选择相应功能时发送。
                 data_collection_permissions: {
                   required: ['bookmarksInfo'],
-                  optional: ['authenticationInfo'],
+                  optional: ['authenticationInfo', 'websiteActivity'],
                 },
               },
             },

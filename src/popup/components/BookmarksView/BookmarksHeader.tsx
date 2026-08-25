@@ -13,6 +13,7 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import SortIcon from '@mui/icons-material/Sort';
 import CheckIcon from '@mui/icons-material/Check';
 import ViewToggleButton from './ViewToggleButton';
+import AiClassifyButton from './AiClassifyButton';
 import { BookmarkItem as BookmarkItemType } from '../../../utils/bookmark-service';
 import type { BookmarkSortOrder } from '../../../utils/bookmark-search-utils';
 
@@ -260,6 +261,7 @@ export const BookmarksHeaderActions: React.FC<{
                         </Menu>
                     </>
                 )}
+                <AiClassifyButton />
                 <ViewToggleButton
                     viewType={viewType}
                     onChange={onViewTypeChange}
