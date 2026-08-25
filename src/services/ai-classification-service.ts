@@ -168,8 +168,10 @@ export async function rollbackAiClassificationPlan(planInput?: AiClassificationP
       const current = await browser.bookmarks.get(item.id) as NativeBookmarkNode[];
       if (!current[0] || current[0].parentId === item.parentId) continue;
       const expectedParent = plan.appliedDestinationByBookmarkId?.[item.id];
+      // 只有本次操作记录过目标位置的节点才允许回滚；尚未处理的节点可能已被用户手动移动。
+      if (!expectedParent) continue;
       // 用户在分类完成后手动移动过的书签不强行覆盖，避免撤销操作吞掉后续修改。
-      if (expectedParent && current[0].parentId !== expectedParent) continue;
+      if (current[0].parentId !== expectedParent) continue;
       await browser.bookmarks.move(item.id, { parentId: item.parentId, index: item.index });
     } catch {
       // 继续处理其他节点，最终状态仍保存在计划中。
