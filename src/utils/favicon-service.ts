@@ -43,21 +43,14 @@ export const getFaviconUrl = (url: string): string => {
       return `${baseWithSlash}_favicon/?pageUrl=${encodeURIComponent(url)}&size=32`;
     }
 
-    // Firefox：使用 Google favicon 服务（图片加载失败时 UI 会自动回退到默认图标）
-    const domain = getDomainFromUrl(url);
-    if (!domain) return '';
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
+    // Firefox 不调用第三方 favicon 服务，避免把书签域名泄漏给 Google。
+    // UI 会在空 URL 时直接显示默认图标。
+    if (firefoxRuntime) return '';
   } catch (error) {
     console.error('获取图标URL失败:', error);
     
-    // 如果Chrome API失败，回退到Google的favicon服务
-    try {
-      const domain = getDomainFromUrl(url);
-      if (!domain) return '';
-      return `https://www.google.com/s2/favicons?domain=${domain}&sz=64`;
-    } catch {
-      return '';
-    }
+    // Firefox/未知运行时不向第三方服务回退，直接让 UI 使用默认图标。
+    return '';
   }
 };
 
