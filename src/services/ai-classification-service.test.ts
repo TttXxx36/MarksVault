@@ -7,6 +7,10 @@ describe('ai-classification rollback safety', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // The shared browser fixture uses lightweight async functions; replace only the
+    // methods this test needs so assertions and per-node behavior remain isolated.
+    bookmarks.get = jest.fn();
+    bookmarks.move = jest.fn();
   });
 
   test('does not move a node that was changed by the user after the operation', async () => {
