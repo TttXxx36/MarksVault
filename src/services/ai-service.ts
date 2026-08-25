@@ -53,6 +53,15 @@ const validateEndpoint = (endpoint: string): string => {
   return parsed.toString().replace(/\/$/, '');
 };
 
+const validateApiKeyHeader = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const header = value.trim();
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(header)) throw new Error('API Key Header 名称无效');
+  const blocked = new Set(['authorization', 'cookie', 'host', 'origin', 'referer']);
+  if (blocked.has(header.toLowerCase())) throw new Error('API Key Header 不允许使用该受保护名称');
+  return header;
+};
+
 const normalizeConfig = (value: Partial<AiProviderConfig>): AiProviderConfig => {
   const defaults = createDefaultAiProviderConfig();
   return {
@@ -62,7 +71,7 @@ const normalizeConfig = (value: Partial<AiProviderConfig>): AiProviderConfig => 
     apiKey: typeof value.apiKey === 'string' ? value.apiKey : '',
     protocol: value.protocol === 'chat-completions' || value.protocol === 'custom' ? value.protocol : 'responses',
     authType: value.authType === 'api-key-header' || value.authType === 'none' ? value.authType : 'bearer',
-    apiKeyHeader: typeof value.apiKeyHeader === 'string' && value.apiKeyHeader.trim() ? value.apiKeyHeader.trim() : defaults.apiKeyHeader,
+    apiKeyHeader: validateApiKeyHeader(value.apiKeyHeader, defaults.apiKeyHeader),
     model: typeof value.model === 'string' ? value.model.trim() : '',
     systemPrompt: typeof value.systemPrompt === 'string' ? value.systemPrompt.slice(0, 8000) : '',
     temperature: clamp(typeof value.temperature === 'number' && Number.isFinite(value.temperature) ? value.temperature : defaults.temperature, 0, 1),

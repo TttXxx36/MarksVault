@@ -66,7 +66,7 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
   const result = await classifyBookmarks(config, bookmarks);
   const assignedIds = new Set(result.assignments.map(item => item.bookmarkId));
   const snapshot = bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
-  return {
+  const plan: AiClassificationPlan = {
     id: createId(),
     createdAt: Date.now(),
     categories: result.categories,
@@ -74,9 +74,12 @@ export async function createAiClassificationPlan(configInput?: AiProviderConfig)
     snapshot,
     skippedBookmarkIds: [],
     unassignedBookmarkIds: bookmarks.filter(item => !assignedIds.has(item.id)).map(item => item.id),
+    appliedBookmarkIds: [],
     createdFolderIds: [],
     state: 'preview',
   };
+  await browser.storage.local.set({ [PLAN_KEY]: plan });
+  return plan;
 }
 
 export async function applyAiClassificationPlan(plan: AiClassificationPlan): Promise<AiClassificationPlan> {
@@ -84,15 +87,40 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
   const tree = await browser.bookmarks.getTree() as NativeBookmarkNode[];
   const root = getToolbarRoot(tree);
   if (!root?.id) throw new Error('找不到可写入的书签栏');
-  const folderMap = new Map<string, string>();
-  const createdFolderIds: string[] = [];
-  for (const category of plan.categories) {
-    const folder = await getCategoryFolder(root.id, category.name);
-    folderMap.set(category.name.toLocaleLowerCase(), folder.id);
-    if (folder.created) createdFolderIds.push(folder.id);
+
+  // 写入前重新检查节点位置和可修改性，防止预览期间的人工改动被覆盖。
+  const snapshotById = new Map(plan.snapshot.map(item => [item.id, item]));
+  for (const assignment of plan.assignments) {
+    const current = await browser.bookmarks.get(assignment.bookmarkId) as NativeBookmarkNode[];
+    const node = current[0];
+    const original = snapshotById.get(assignment.bookmarkId);
+    if (!node?.url) continue;
+    if (node.unmodifiable) throw new Error('书签包含不可修改节点，请重新生成预览');
+    if (original && (node.parentId !== original.parentId || node.index !== original.index)) {
+      throw new Error('预览期间书签位置已变化，请重新生成分类预览');
+    }
   }
-  const applied: AiClassificationPlan = { ...plan, createdFolderIds, state: 'applied' };
+
+  let applied: AiClassificationPlan = {
+    ...plan,
+    state: 'applied',
+    appliedBookmarkIds: [],
+    createdFolderIds: [],
+  };
+  // 先落盘状态，再执行任何创建/移动；Service Worker 中断后仍可继续撤销。
+  await browser.storage.local.set({ [PLAN_KEY]: applied });
+
+  const folderMap = new Map<string, string>();
   try {
+    for (const category of plan.categories) {
+      const folder = await getCategoryFolder(root.id, category.name);
+      folderMap.set(category.name.toLocaleLowerCase(), folder.id);
+      if (folder.created) {
+        applied = { ...applied, createdFolderIds: [...applied.createdFolderIds, folder.id] };
+        await browser.storage.local.set({ [PLAN_KEY]: applied });
+      }
+    }
+
     for (const assignment of plan.assignments) {
       const targetId = folderMap.get(assignment.categoryName.toLocaleLowerCase());
       if (!targetId) continue;
@@ -100,6 +128,8 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
       const node = current[0];
       if (!node?.url || node.parentId === targetId) continue;
       await browser.bookmarks.move(node.id, { parentId: targetId });
+      applied = { ...applied, appliedBookmarkIds: [...applied.appliedBookmarkIds, node.id] };
+      await browser.storage.local.set({ [PLAN_KEY]: applied });
     }
   } catch (error) {
     try {
@@ -109,7 +139,6 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan): Pro
     }
     throw new Error('AI 分类执行失败，已尝试自动回滚');
   }
-  await browser.storage.local.set({ [PLAN_KEY]: applied });
   return applied;
 }
 

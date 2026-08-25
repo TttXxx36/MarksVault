@@ -62,6 +62,7 @@ export interface AiClassificationPlan {
   snapshot: AiSnapshotItem[];
   skippedBookmarkIds: string[];
   unassignedBookmarkIds: string[];
+  appliedBookmarkIds: string[];
   createdFolderIds: string[];
   state: 'preview' | 'applied' | 'rolled_back';
 }
