@@ -8,7 +8,7 @@ import {
   AiProviderConfig,
 } from '../types/ai';
 import { AI_PROMPT_CONTRACT_VERSION, classifyBookmarks, getAiProviderConfig, AiClassificationOptions } from './ai-service';
-import { createBookmarkSnapshot } from './bookmark-snapshot-service';
+import { createBookmarkSnapshot, getSnapshotRepository } from './bookmark-snapshot-service';
 
 type NativeBookmarkNode = {
   id: string;
@@ -465,8 +465,21 @@ const mergeAssignments = (existing: AiAssignment[], next: AiAssignment[]): AiAss
 };
 
 export async function getAiClassificationJob(): Promise<AiClassificationJob | null> {
-  const data = await browser.storage.local.get(JOB_KEY) as Record<string, unknown>;
-  const job = data[JOB_KEY];
+  const repository = getSnapshotRepository();
+  let job: unknown = null;
+  // In production, large task checkpoints live in IndexedDB. Jest and older
+  // migration contexts without IndexedDB keep the v2.0.1 local fallback.
+  if (globalThis.indexedDB && repository.getAiClassificationJob) {
+    job = await repository.getAiClassificationJob();
+  }
+  if (!job) {
+    const data = await browser.storage.local.get(JOB_KEY) as Record<string, unknown>;
+    job = data[JOB_KEY];
+    if (job && globalThis.indexedDB && repository.putAiClassificationJob) {
+      await repository.putAiClassificationJob(job as AiClassificationJob);
+      await browser.storage.local.remove(JOB_KEY);
+    }
+  }
   if (!job || typeof job !== 'object') return null;
   const raw = job as Partial<AiClassificationJob>;
   return {
@@ -484,5 +497,11 @@ export async function getAiClassificationJob(): Promise<AiClassificationJob | nu
 }
 
 export async function saveAiClassificationJob(job: AiClassificationJob): Promise<void> {
+  const repository = getSnapshotRepository();
+  if (globalThis.indexedDB && repository.putAiClassificationJob) {
+    await repository.putAiClassificationJob(job);
+    await browser.storage.local.remove(JOB_KEY);
+    return;
+  }
   await browser.storage.local.set({ [JOB_KEY]: job });
 }

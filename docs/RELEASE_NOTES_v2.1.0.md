@@ -4,6 +4,7 @@
 
 - 新增 `BookmarkSnapshot`、`SnapshotIndex`、`SnapshotDiff`、`RestorePlan`、`RestoreJournal` 等快照领域模型。
 - 完整书签树和恢复日志保存在本地 IndexedDB；`storage.local` 仅保存索引、当前任务标识、迁移标记和最近状态。
+- AI 分类批次检查点也迁移到同一 IndexedDB；旧版 `ai_classification_job` 会在首次读取时兼容迁移，避免把大型任务数据继续塞入 `storage.local`。
 - AI 分类确认执行前强制创建并校验“AI 分类前”自动快照；快照失败时绝不调用书签移动/写入 API。
 - 支持设置页和任务页创建命名快照、搜索筛选、JSON 导出/导入及 schema、URL 协议、节点数量、最大深度、字节大小和内容哈希校验。
 - 自动快照默认只保留最近 20 个；命名快照受保护，不会被自动清理。

@@ -14,13 +14,14 @@ import {
   RestoreJournal,
   RestorePlan,
 } from '../types/snapshot';
+import type { AiClassificationJob } from '../types/ai';
 
 export const SNAPSHOT_INDEX_KEY = 'bookmark_snapshot_index';
 export const SNAPSHOT_CURRENT_TASK_KEY = 'bookmark_snapshot_current_task';
 export const SNAPSHOT_MIGRATION_KEY = 'bookmark_snapshot_migration';
 export const SNAPSHOT_RECENT_STATE_KEY = 'bookmark_snapshot_recent_state';
 export const SNAPSHOT_DB_NAME = 'marksvault-snapshots-v1';
-export const SNAPSHOT_DB_VERSION = 1;
+export const SNAPSHOT_DB_VERSION = 2;
 export const MAX_AUTOMATIC_SNAPSHOTS = 20;
 export const MAX_SNAPSHOT_NODES = 100_000;
 export const MAX_SNAPSHOT_DEPTH = 100;
@@ -28,6 +29,7 @@ export const MAX_SNAPSHOT_DEPTH = 100;
 const SNAPSHOT_STORE = 'snapshots';
 const JOURNAL_STORE = 'restore_journals';
 const PLAN_STORE = 'restore_plans';
+const AI_JOB_STORE = 'ai_classification_jobs';
 const ALLOWED_URL_PROTOCOLS = new Set([
   'http:',
   'https:',
@@ -60,6 +62,10 @@ export interface SnapshotRepository {
   getPlan(planId: string): Promise<RestorePlan | null>;
   putPlan(plan: RestorePlan): Promise<void>;
   deletePlan(planId: string): Promise<void>;
+  /** Large AI task checkpoints are local IndexedDB data, not storage.local. */
+  getAiClassificationJob?(): Promise<AiClassificationJob | null>;
+  putAiClassificationJob?(job: AiClassificationJob): Promise<void>;
+  deleteAiClassificationJob?(): Promise<void>;
 }
 
 const clone = <T>(value: T): T => {
@@ -102,6 +108,7 @@ export class MemorySnapshotRepository implements SnapshotRepository {
   private snapshots = new Map<string, BookmarkSnapshot>();
   private journals = new Map<string, RestoreJournal>();
   private plans = new Map<string, RestorePlan>();
+  private aiJob: AiClassificationJob | null = null;
 
   async getSnapshot(snapshotId: string): Promise<BookmarkSnapshot | null> {
     return clone(this.snapshots.get(snapshotId) ?? null);
@@ -142,6 +149,18 @@ export class MemorySnapshotRepository implements SnapshotRepository {
   async deletePlan(planId: string): Promise<void> {
     this.plans.delete(planId);
   }
+
+  async getAiClassificationJob(): Promise<AiClassificationJob | null> {
+    return clone(this.aiJob);
+  }
+
+  async putAiClassificationJob(job: AiClassificationJob): Promise<void> {
+    this.aiJob = clone(job);
+  }
+
+  async deleteAiClassificationJob(): Promise<void> {
+    this.aiJob = null;
+  }
 }
 
 export class IndexedDbSnapshotRepository implements SnapshotRepository {
@@ -164,6 +183,9 @@ export class IndexedDbSnapshotRepository implements SnapshotRepository {
         }
         if (!database.objectStoreNames.contains(PLAN_STORE)) {
           database.createObjectStore(PLAN_STORE, { keyPath: 'planId' });
+        }
+        if (!database.objectStoreNames.contains(AI_JOB_STORE)) {
+          database.createObjectStore(AI_JOB_STORE, { keyPath: 'id' });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -239,6 +261,24 @@ export class IndexedDbSnapshotRepository implements SnapshotRepository {
 
   async deletePlan(planId: string): Promise<void> {
     await this.request(PLAN_STORE, 'readwrite', store => store.delete(planId));
+  }
+
+  async getAiClassificationJob(): Promise<AiClassificationJob | null> {
+    const job = await this.request<(AiClassificationJob & { id: string }) | undefined>(AI_JOB_STORE, 'readonly', store => store.get('active'));
+    return job ? clone(job) : null;
+  }
+
+  async putAiClassificationJob(job: AiClassificationJob): Promise<void> {
+    try {
+      await this.request(AI_JOB_STORE, 'readwrite', store => store.put({ ...job, id: 'active' }));
+    } catch (error) {
+      if (isQuotaError(error)) throw new SnapshotCapacityError('无法保存 AI 分类任务检查点，存储空间不足');
+      throw error;
+    }
+  }
+
+  async deleteAiClassificationJob(): Promise<void> {
+    await this.request(AI_JOB_STORE, 'readwrite', store => store.delete('active'));
   }
 }
 
