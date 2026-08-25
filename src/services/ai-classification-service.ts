@@ -8,6 +8,7 @@ type NativeBookmarkNode = {
   title: string;
   url?: string;
   index?: number;
+  unmodifiable?: string;
   children?: NativeBookmarkNode[];
 };
 
