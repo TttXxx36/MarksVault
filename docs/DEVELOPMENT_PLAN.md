@@ -2,7 +2,7 @@
 
 > 文档状态：Approved for implementation planning  
 > 目标仓库：`TttXxx36/MarksVault`  
-> 审计基线：`main@13d4be83307a889c4a88a5fda4171b701b0a940b`  
+> 审计基线：`main@4ae3d7c24f50574d36e86609338b36f18ac2695d`  
 > 初始规划版本：`1.5.0`；当前实现版本：`2.1.0`  
 > 编写日期：2026-08-25；最近审计：2026-08-26  
 > 主要执行代理：GPT-5.6 Luna（后续实现时）
