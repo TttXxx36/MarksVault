@@ -75,18 +75,26 @@ export default defineConfig({
       permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
       host_permissions: ['https://api.github.com/*'],
       // AI 供应商地址按运行时 origin 精确申请，不作为安装必需权限。
-      optional_host_permissions: ['https://*/*', 'http://*/*'],
+      // 只声明运行时需要的可选来源：HTTPS 任意 origin，以及本机 HTTP 服务。
+      // 不在安装时请求这些权限；连接测试/分类前仍需按目标 origin 申请。
+      ...(isFirefox
+        ? {
+            // MV2 uses optional_permissions for host origins. These are only
+            // declarations; the runtime asks for one exact origin on demand.
+            optional_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'],
+          }
+        : { optional_host_permissions: ['https://*/*', 'http://localhost/*', 'http://127.0.0.1/*'] }),
       ...(isFirefox
         ? {
             // 固定 Firefox Add-on ID，保证 storage.sync 在升级和跨设备间保持同一命名空间。
             browser_specific_settings: {
               gecko: {
                 id: 'marksvault@tttxxx36.github.io',
-                strict_min_version: '109.0',
+                strict_min_version: '140.0',
                 // Firefox AMO 数据收集声明：核心备份读取书签；认证/网站地址仅在用户选择相应功能时发送。
                 data_collection_permissions: {
-                  required: ['bookmarksInfo'],
-                  optional: ['authenticationInfo', 'websiteActivity'],
+                  required: ['none'],
+                  optional: ['authenticationInfo', 'bookmarksInfo'],
                 },
               },
             },

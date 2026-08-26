@@ -101,12 +101,21 @@ const getNodeById = async (id: string): Promise<RestoreBookmarkNode | null> => {
     index: node.index,
     title: node.title || '',
     ...(node.url ? { url: node.url } : {}),
-    type: node.url ? 'bookmark' : 'folder',
+    type: (node as unknown as { type?: 'bookmark' | 'folder' | 'separator' }).type || (node.url ? 'bookmark' : Array.isArray(node.children) ? 'folder' : 'separator'),
+    ...((node as unknown as { unmodifiable?: string }).unmodifiable ? { unmodifiable: (node as unknown as { unmodifiable?: string }).unmodifiable } : {}),
     path: '',
   };
 };
 
 const isSameUrl = (a?: string, b?: string): boolean => (a || '') === (b || '');
+
+const resolveSemanticParentId = (snapshot: BookmarkSnapshot, targetParentId: string | undefined, currentNodes: RestoreBookmarkNode[]): string | undefined => {
+  if (!targetParentId) return targetParentId;
+  const root = snapshot.roots?.find(item => item.nativeId === targetParentId);
+  if (!root) return targetParentId;
+  const currentRoot = currentNodes.find(node => node.rootRole === root.role || (node.path === '' && node.title === root.title));
+  return currentRoot?.id || targetParentId;
+};
 
 const makeConflict = (
   snapshot: BookmarkSnapshot,
@@ -190,6 +199,17 @@ export const calculateSnapshotDiff = (
     if (snapshotNode.type !== currentNode.type) {
       const typeConflict = makeConflict(snapshot, snapshotNode, [currentNode.id], 'type-changed', '节点类型发生变化');
       items.push({ id: snapshotNode.id, snapshotNode, currentNode, matchedBy, kind: 'conflict', changes: ['conflict'], action: 'skip', reason: typeConflict.message, conflict: typeConflict });
+      continue;
+    }
+    if (snapshotNode.type === 'separator' || currentNode.unmodifiable || snapshotNode.unmodifiable) {
+      const unsupportedConflict = makeConflict(
+        snapshot,
+        snapshotNode,
+        [currentNode.id],
+        currentNode.unmodifiable ? 'unmodifiable' : 'unsupported-type',
+        currentNode.unmodifiable ? '当前节点受浏览器策略保护，恢复会跳过' : '分隔线节点不支持跨浏览器恢复写入',
+      );
+      items.push({ id: snapshotNode.id, snapshotNode, currentNode, matchedBy, kind: 'conflict', changes: ['conflict'], action: 'skip', reason: unsupportedConflict.message, conflict: unsupportedConflict });
       continue;
     }
     if (!isSameUrl(snapshotNode.url, currentNode.url)) {
@@ -381,6 +401,8 @@ export const applyRestorePlan = async (
   const loadedJournal = plan.journalId ? await repository.getJournal(plan.journalId) : null;
   if (!loadedJournal) throw new Error('找不到恢复日志，已阻止写入');
   let journal: RestoreJournal = loadedJournal;
+  const sourceSnapshot = await getBookmarkSnapshot(plan.snapshotId, repository);
+  if (!sourceSnapshot) throw new Error('找不到恢复源快照，已阻止写入');
 
   if (!plan.beforeSnapshotId) {
     // This must complete and validate before acquiring a write path. If it
@@ -403,6 +425,7 @@ export const applyRestorePlan = async (
       plan = { ...plan, state: 'applying', updatedAt: Date.now() };
       journal = { ...journal, state: 'applying', leaseId, updatedAt: Date.now() };
       await savePlanAndJournal(repository, plan, journal);
+      const currentTreeForRoots = await captureBookmarkTree();
       const selected = new Set(plan.selectedItemIds);
       const items = plan.diff.items.filter(item => selected.has(item.id) && item.action === 'restore');
       for (const item of items) {
@@ -431,17 +454,22 @@ export const applyRestorePlan = async (
             await updateJournalItem(repository, plan, journal, item.id, { state: 'skipped', completedAt: Date.now(), error: 'URL 已变化，恢复不会覆盖 URL' });
             continue;
           }
+          if (target.type === 'separator' || current.type === 'separator' || current.unmodifiable || target.unmodifiable) {
+            await updateJournalItem(repository, plan, journal, item.id, { state: 'skipped', completedAt: Date.now(), error: '分隔线或受保护节点不可写入' });
+            continue;
+          }
+          const targetParentId = resolveSemanticParentId(sourceSnapshot, target.parentId, currentTreeForRoots);
           const journalUpdate: Partial<RestoreJournalItem> = {
             bookmarkId: current.id,
             beforeParentId: current.parentId,
             beforeIndex: current.index,
             beforeTitle: current.title,
-            afterParentId: target.parentId,
+            afterParentId: targetParentId,
             afterIndex: target.index,
             afterTitle: target.title,
           };
-          if (current.parentId !== target.parentId && target.parentId) {
-            await browser.bookmarks.move(current.id, { parentId: target.parentId, index: target.index });
+          if (current.parentId !== targetParentId && targetParentId) {
+            await browser.bookmarks.move(current.id, { parentId: targetParentId, index: target.index });
             journalUpdate.operation = 'move';
           }
           if (current.title !== target.title) {

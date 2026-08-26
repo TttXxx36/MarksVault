@@ -11,6 +11,8 @@ import {
   SnapshotSource,
   SNAPSHOT_SCHEMA_VERSION,
   SNAPSHOT_SOURCES,
+  BookmarkRootRole,
+  BookmarkSnapshotRoot,
   RestoreJournal,
   RestorePlan,
 } from '../types/snapshot';
@@ -46,6 +48,8 @@ type BookmarkTreeNode = {
   parentId?: string;
   title?: string;
   url?: string;
+  type?: string;
+  unmodifiable?: string;
   index?: number;
   dateAdded?: number;
   children?: BookmarkTreeNode[];
@@ -331,6 +335,8 @@ const snapshotContent = (nodes: BookmarkSnapshotNode[]): BookmarkSnapshotNode[] 
   title: node.title,
   url: node.url,
   type: node.type,
+  ...(node.unmodifiable ? { unmodifiable: node.unmodifiable } : {}),
+  ...(node.rootRole ? { rootRole: node.rootRole } : {}),
   path: node.path,
   dateAdded: node.dateAdded,
 }));
@@ -386,10 +392,12 @@ export const validateSnapshot = async (candidate: unknown): Promise<SnapshotImpo
   if (!raw.userName || typeof raw.userName !== 'string') errors.push('缺少用户名称');
   if (!Number.isFinite(raw.createdAt)) errors.push('缺少创建时间');
   if (!Array.isArray(raw.nodes)) errors.push('缺少书签节点列表');
+  if (raw.roots !== undefined && !Array.isArray(raw.roots)) errors.push('根目录元数据格式无效');
   if (hasSecretKey(candidate)) errors.push('快照不得包含 API Key、Token 或其他密钥字段');
   const nodes = Array.isArray(raw.nodes) ? raw.nodes : [];
   if (nodes.length > MAX_SNAPSHOT_NODES) errors.push(`节点数量超过上限 ${MAX_SNAPSHOT_NODES}`);
   const ids = new Set<string>();
+  const rootIds = new Set(nodes.map(node => (node as BookmarkSnapshotNode).id));
   for (const node of nodes as BookmarkSnapshotNode[]) {
     if (!node || typeof node !== 'object' || typeof node.id !== 'string' || typeof node.title !== 'string') {
       errors.push('节点字段无效');
@@ -397,10 +405,28 @@ export const validateSnapshot = async (candidate: unknown): Promise<SnapshotImpo
     }
     if (ids.has(node.id)) errors.push(`节点 ID 重复: ${node.id}`);
     ids.add(node.id);
-    if (node.type !== 'bookmark' && node.type !== 'folder') errors.push(`节点类型无效: ${node.id}`);
+    if (node.type !== 'bookmark' && node.type !== 'folder' && node.type !== 'separator') errors.push(`节点类型无效: ${node.id}`);
     if (node.type === 'bookmark' && (!node.url || !isSafeUrl(node.url))) errors.push(`节点 URL 协议不安全: ${node.id}`);
-    if (node.type === 'folder' && node.url) errors.push(`文件夹不应包含 URL: ${node.id}`);
+    if (node.type !== 'bookmark' && node.url) errors.push(`文件夹或分隔线不应包含 URL: ${node.id}`);
     if (typeof node.path !== 'string') errors.push(`节点路径无效: ${node.id}`);
+    if (node.rootRole && !['toolbar', 'menu', 'other', 'mobile', 'managed', 'unknown'].includes(node.rootRole)) {
+      errors.push(`根目录语义角色无效: ${node.id}`);
+    }
+  }
+  if (Array.isArray(raw.roots)) {
+    const rootNodeIds = new Set<string>();
+    for (const root of raw.roots as BookmarkSnapshotRoot[]) {
+      if (!root || typeof root !== 'object' || typeof root.nativeId !== 'string' || typeof root.title !== 'string' || !Array.isArray(root.nodeIds)) {
+        errors.push('根目录字段无效');
+        continue;
+      }
+      if (!['toolbar', 'menu', 'other', 'mobile', 'managed', 'unknown'].includes(root.role)) errors.push(`根目录角色无效: ${root.nativeId}`);
+      for (const nodeId of root.nodeIds) {
+        if (typeof nodeId !== 'string' || !rootIds.has(nodeId)) errors.push(`根目录引用了不存在的节点: ${String(nodeId)}`);
+        if (rootNodeIds.has(nodeId)) errors.push(`节点被多个根目录引用: ${nodeId}`);
+        rootNodeIds.add(nodeId);
+      }
+    }
   }
   const metrics = await computeSnapshotMetrics(nodes as BookmarkSnapshotNode[]);
   if (metrics.maxDepth > MAX_SNAPSHOT_DEPTH) errors.push(`最大深度超过上限 ${MAX_SNAPSHOT_DEPTH}`);
@@ -422,29 +448,55 @@ export const validateSnapshot = async (candidate: unknown): Promise<SnapshotImpo
   };
 };
 
-const flattenBookmarkTree = (nodes: BookmarkTreeNode[], parentPath = '', depth = 0): { nodes: BookmarkSnapshotNode[]; maxDepth: number } => {
+const getNativeNodeType = (node: BookmarkTreeNode): BookmarkSnapshotNode['type'] => {
+  if (node.type === 'bookmark' || node.type === 'folder' || node.type === 'separator') return node.type;
+  if (node.url) return 'bookmark';
+  return Array.isArray(node.children) ? 'folder' : 'separator';
+};
+
+const inferRootRole = (node: Pick<BookmarkTreeNode, 'id' | 'title'>): BookmarkRootRole => {
+  const id = node.id.toLowerCase();
+  const title = (node.title || '').trim().toLocaleLowerCase();
+  if (id.startsWith('toolbar') || id === '1' || /bookmark(s)? toolbar|bookmark(s)? bar|书签栏|書籤列/.test(title)) return 'toolbar';
+  if (id.startsWith('menu') || /bookmark(s)? menu|书签菜单|书籤選單/.test(title)) return 'menu';
+  if (id.startsWith('mobile') || /mobile bookmark|移动书签|行動書籤/.test(title)) return 'mobile';
+  if (id.startsWith('unfiled') || /other bookmark|unfiled|其他书签|其他書籤/.test(title)) return 'other';
+  if (id.startsWith('managed') || /managed|受管理/.test(title)) return 'managed';
+  return 'unknown';
+};
+
+const flattenBookmarkTree = (nodes: BookmarkTreeNode[], parentPath = '', depth = 0, rootRole?: BookmarkRootRole): { nodes: BookmarkSnapshotNode[]; maxDepth: number } => {
   const result: BookmarkSnapshotNode[] = [];
   let maxDepth = depth;
   for (const node of nodes) {
     const title = typeof node.title === 'string' ? node.title : '';
-    const isFolder = !node.url;
+    const type = getNativeNodeType(node);
     const normalized: BookmarkSnapshotNode = {
       id: node.id,
       parentId: node.parentId,
       index: node.index,
       title,
       ...(node.url ? { url: node.url } : {}),
-      type: isFolder ? 'folder' : 'bookmark',
+      type,
+      ...(node.unmodifiable ? { unmodifiable: node.unmodifiable } : {}),
+      ...(rootRole ? { rootRole } : {}),
       path: parentPath,
       dateAdded: node.dateAdded,
     };
     result.push(normalized);
     maxDepth = Math.max(maxDepth, depth);
-    if (node.children?.length) {
+    if (node.children?.length && type === 'folder') {
       const nextPath = parentPath ? `${parentPath} / ${title}` : title;
-      const nested = flattenBookmarkTree(node.children, nextPath, depth + 1);
-      result.push(...nested.nodes);
-      maxDepth = Math.max(maxDepth, nested.maxDepth);
+      for (const child of node.children) {
+        const nested = flattenBookmarkTree(
+          [child],
+          nextPath,
+          depth + 1,
+          depth === 0 ? inferRootRole(child) : rootRole,
+        );
+        result.push(...nested.nodes);
+        maxDepth = Math.max(maxDepth, nested.maxDepth);
+      }
     }
   }
   return { nodes: result, maxDepth };
@@ -453,6 +505,32 @@ const flattenBookmarkTree = (nodes: BookmarkTreeNode[], parentPath = '', depth =
 export const captureBookmarkTree = async (): Promise<BookmarkSnapshotNode[]> => {
   const tree = await browser.bookmarks.getTree() as unknown as BookmarkTreeNode[];
   return flattenBookmarkTree(Array.isArray(tree) ? tree : []).nodes;
+};
+
+export interface CapturedBookmarkTree {
+  nodes: BookmarkSnapshotNode[];
+  roots: BookmarkSnapshotRoot[];
+}
+
+/** Capture the full tree and semantic roots in one browser API call. */
+export const captureBookmarkTreeWithRoots = async (): Promise<CapturedBookmarkTree> => {
+  const tree = await browser.bookmarks.getTree() as unknown as BookmarkTreeNode[];
+  const root = Array.isArray(tree) ? tree[0] : undefined;
+  const nodes = flattenBookmarkTree(Array.isArray(tree) ? tree : []).nodes;
+  const roots: BookmarkSnapshotRoot[] = [];
+  for (const nativeRoot of root?.children || []) {
+    const descendants = flattenBookmarkTree([nativeRoot]).nodes;
+    roots.push({
+      role: inferRootRole(nativeRoot),
+      nativeId: nativeRoot.id,
+      title: typeof nativeRoot.title === 'string' ? nativeRoot.title : '',
+      nodeIds: descendants.map(node => node.id),
+    });
+  }
+  return {
+    nodes,
+    roots,
+  };
 };
 
 const formatSnapshotDate = (timestamp: number): string => {
@@ -497,6 +575,7 @@ export interface CreateBookmarkSnapshotOptions {
   delta?: SnapshotDelta[];
   now?: number;
   nodes?: BookmarkSnapshotNode[];
+  roots?: BookmarkSnapshotRoot[];
   repository?: SnapshotRepository;
 }
 
@@ -550,7 +629,8 @@ export const createBookmarkSnapshot = async (options: CreateBookmarkSnapshotOpti
   const now = options.now ?? Date.now();
   const isAutomatic = options.isAutomatic ?? (options.source !== SNAPSHOT_SOURCES.MANUAL && options.source !== SNAPSHOT_SOURCES.IMPORTED);
   const isProtected = options.isProtected ?? !isAutomatic;
-  const nodes = snapshotContent(options.nodes ?? await captureBookmarkTree());
+  const captured = options.nodes ? { nodes: options.nodes, roots: options.roots || [] } : await captureBookmarkTreeWithRoots();
+  const nodes = snapshotContent(captured.nodes);
   const metrics = await computeSnapshotMetrics(nodes);
   const metadata = createMetadata({
     snapshotId: createId('snapshot'),
@@ -574,11 +654,19 @@ export const createBookmarkSnapshot = async (options: CreateBookmarkSnapshotOpti
     affectedBookmarkIds: [...(options.affectedBookmarkIds || [])],
     delta: [...(options.delta || [])],
     rootIds: nodes.filter(node => !node.parentId).map(node => node.id),
+    roots: captured.roots,
     nodes,
   };
   const validation = await validateSnapshot(snapshot);
   if (!validation.valid) throw new SnapshotValidationError(validation.errors.join('; '));
   try {
+    const capacity = await getSnapshotStorageSummary();
+    const existing = capacity.byteSize;
+    // Fail closed before IndexedDB write when the configured safety ceiling
+    // is reached. Retention never silently removes protected snapshots.
+    if (existing + snapshot.byteSize > capacity.rejectAtBytes) {
+      throw new SnapshotCapacityError(`快照空间将超过安全上限 ${capacity.rejectAtBytes} 字节，请先导出或删除快照`);
+    }
     await repository.putSnapshot(snapshot);
     let index = await loadSnapshotIndex();
     const entry: SnapshotIndexEntry = {
@@ -599,6 +687,32 @@ export const createBookmarkSnapshot = async (options: CreateBookmarkSnapshotOpti
 export const getBookmarkSnapshot = async (snapshotId: string, repository?: SnapshotRepository): Promise<BookmarkSnapshot | null> =>
   (repository || getSnapshotRepository()).getSnapshot(snapshotId);
 
+export interface SnapshotStorageSummary {
+  snapshotCount: number;
+  automaticCount: number;
+  protectedCount: number;
+  byteSize: number;
+  warnAtBytes: number;
+  rejectAtBytes: number;
+  warning: boolean;
+  rejected: boolean;
+}
+
+export const getSnapshotStorageSummary = async (overrides?: Partial<SnapshotRetentionPolicy>): Promise<SnapshotStorageSummary> => {
+  const index = await loadSnapshotIndex();
+  const policy = getSnapshotRetentionPolicy(overrides);
+  return {
+    snapshotCount: index.entries.length,
+    automaticCount: index.entries.filter(entry => entry.isAutomatic).length,
+    protectedCount: index.entries.filter(entry => entry.isProtected).length,
+    byteSize: index.byteSize,
+    warnAtBytes: policy.warnAtBytes,
+    rejectAtBytes: policy.rejectAtBytes,
+    warning: index.byteSize >= policy.warnAtBytes,
+    rejected: index.byteSize >= policy.rejectAtBytes,
+  };
+};
+
 export const listBookmarkSnapshots = async (options?: {
   repository?: SnapshotRepository;
   query?: string;
@@ -616,11 +730,14 @@ export const listBookmarkSnapshots = async (options?: {
   });
 };
 
-export const deleteBookmarkSnapshot = async (snapshotId: string, repository?: SnapshotRepository): Promise<void> => {
-  const repo = repository || getSnapshotRepository();
+export const deleteBookmarkSnapshot = async (snapshotId: string, repositoryOrOptions?: SnapshotRepository | { repository?: SnapshotRepository; allowProtected?: boolean }): Promise<void> => {
+  const options = repositoryOrOptions && 'getSnapshot' in repositoryOrOptions
+    ? { repository: repositoryOrOptions as SnapshotRepository }
+    : (repositoryOrOptions || {});
+  const repo = options.repository || getSnapshotRepository();
   const index = await loadSnapshotIndex();
   const entry = index.entries.find(item => item.snapshotId === snapshotId);
-  if (entry?.isProtected) throw new Error('受保护的命名快照不能被自动删除，请先明确确认删除');
+  if (entry?.isProtected && options.allowProtected !== true) throw new Error('受保护的命名快照不能被自动删除，请先明确确认删除');
   await repo.deleteSnapshot(snapshotId);
   await saveIndex({ ...index, entries: index.entries.filter(item => item.snapshotId !== snapshotId), updatedAt: Date.now() });
 };

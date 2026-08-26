@@ -1,7 +1,7 @@
 import { browser } from 'wxt/browser';
 import { BookmarkBackup, BackupResult, BackupStatus } from '../types/backup';
 import { GitHubCredentials } from '../utils/storage-service';
-import { BookmarkItem, findBookmarkBar, isBookmarkBarNode } from '../utils/bookmark-service';
+import { BookmarkItem, findBookmarkBar, isBookmarkBarNode, isBookmarkNode } from '../utils/bookmark-service';
 import bookmarkService from '../utils/bookmark-service';
 import githubService, { isRetryableGitHubError, GitHubApiError, RetryableError } from './github-service';
 import storageService from '../utils/storage-service';
@@ -35,10 +35,11 @@ class BackupService {
   }
 
   /**
-   * 解析书签备份文件名中的时间戳（bookmarks_backup_YYYYMMDDHHMMSS.json）
+   * 解析书签备份文件名中的时间戳（bookmarks_backup_YYYYMMDDHHMMSS_suffix.json）。
+   * suffix 用于避免同一秒内的备份覆盖彼此。
    */
   private parseBookmarksBackupTimestamp(filename: string): number {
-    const match = filename.match(/bookmarks_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.json/);
+    const match = filename.match(/bookmarks_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:_[a-z0-9-]+)?\.json/i);
     if (!match) return 0;
 
     const [, year, month, day, hour, minute, second] = match;
@@ -102,12 +103,13 @@ class BackupService {
 
     const countItems = (items: BookmarkItem[]) => {
       items.forEach((item: BookmarkItem) => {
+        if (item.type === 'separator') return;
         if (item.isFolder) {
           totalFolders++;
           if (item.children && item.children.length > 0) {
             countItems(item.children);
           }
-        } else {
+        } else if (isBookmarkNode(item)) {
           totalBookmarks++;
         }
       });
@@ -219,7 +221,8 @@ class BackupService {
       const seconds = String(now.getSeconds()).padStart(2, '0');
 
       const timestamp = `${year}${month}${day}${hours}${minutes}${seconds}`;
-      const fileName = `${type}_backup_${timestamp}.json`;
+      const suffix = `${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+      const fileName = `${type}_backup_${timestamp}_${suffix}.json`;
       // 将文件保存到对应文件夹
       const backupFilePath = `${backupFolder}/${fileName}`;
 
@@ -663,6 +666,7 @@ class BackupService {
       ): Promise<void> => {
         for (const item of items) {
           try {
+            if (item.type === 'separator' || item.unmodifiable) continue;
             if (item.isFolder) {
               // 创建文件夹
               const folderResult = await bookmarkService.createFolder({
@@ -1212,6 +1216,7 @@ class BackupService {
       let result = '';
 
       for (const item of items) {
+        if (item.type === 'separator') continue;
         if (item.isFolder) {
           // 对于根节点的第一层，完全跳过根包装文件夹，直接处理其子节点
           if (skipRootWrapper && indentLevel === 1 && !isBookmarkBar(item)) {

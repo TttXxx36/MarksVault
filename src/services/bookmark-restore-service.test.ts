@@ -55,6 +55,26 @@ describe('bookmark restore safety', () => {
     expect(diff.items.find(item => item.id === 'current:b2')?.action).toBe('skip');
   });
 
+  it('skips separators and managed nodes in restore diff', () => {
+    const snapshot = {
+      schemaVersion: 1 as const,
+      snapshotId: 's-separator', name: 'test', userName: 'tester', createdAt: 1,
+      source: 'manual' as const, isAutomatic: false, isProtected: true,
+      nodes: [
+        { id: 'sep', parentId: 'toolbar', title: '', type: 'separator' as const, path: 'Bar' },
+        { id: 'managed', parentId: 'toolbar', title: 'Managed', type: 'folder' as const, unmodifiable: 'managed', path: 'Bar' },
+      ],
+      nodeCount: 2, maxDepth: 2, byteSize: 1, contentHash: '0'.repeat(64), validationStatus: 'valid' as const,
+      affectedBookmarkIds: [], delta: [], rootIds: [],
+    };
+    const diff = calculateSnapshotDiff(snapshot, [
+      { id: 'sep', parentId: 'toolbar', title: '', type: 'separator', path: 'Bar' },
+      { id: 'managed', parentId: 'toolbar', title: 'Managed', type: 'folder', unmodifiable: 'managed', path: 'Bar' },
+    ]);
+    expect(diff.conflictCount).toBe(2);
+    expect(diff.items.every(item => item.action === 'skip')).toBe(true);
+  });
+
   it('creates a restore-before snapshot before writes and records uncertain partial failure', async () => {
     const repository = new MemorySnapshotRepository();
     const tree = [{ id: '0', title: '', children: [{ id: '1', title: 'Bar', children: [] }, { id: '2', title: 'Other', children: [] }] }];

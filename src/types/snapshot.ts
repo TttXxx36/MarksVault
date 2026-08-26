@@ -19,7 +19,16 @@ export const SNAPSHOT_SOURCES = {
 export type SnapshotSource = typeof SNAPSHOT_SOURCES[keyof typeof SNAPSHOT_SOURCES];
 
 export type SnapshotValidationStatus = 'pending' | 'valid' | 'invalid';
-export type BookmarkSnapshotNodeType = 'bookmark' | 'folder';
+export type BookmarkSnapshotNodeType = 'bookmark' | 'folder' | 'separator';
+export type BookmarkRootRole = 'toolbar' | 'menu' | 'other' | 'mobile' | 'managed' | 'unknown';
+
+export interface BookmarkSnapshotRoot {
+  role: BookmarkRootRole;
+  /** Native ID is an observation aid only; restore prefers the semantic role. */
+  nativeId: string;
+  title: string;
+  nodeIds: string[];
+}
 
 export interface BookmarkSnapshotNode {
   id: string;
@@ -28,6 +37,10 @@ export interface BookmarkSnapshotNode {
   title: string;
   url?: string;
   type: BookmarkSnapshotNodeType;
+  /** Firefox managed-policy nodes may be read but must never be mutated. */
+  unmodifiable?: string;
+  /** Present on browser-owned semantic roots; never used as the sole match key. */
+  rootRole?: BookmarkRootRole;
   /** Folder path of the parent, excluding this node's title. */
   path: string;
   dateAdded?: number;
@@ -65,6 +78,8 @@ export interface BookmarkSnapshot extends SnapshotMetadata {
   affectedBookmarkIds: string[];
   delta: SnapshotDelta[];
   rootIds: string[];
+  /** Optional for v1 compatibility; newly captured snapshots populate it. */
+  roots?: BookmarkSnapshotRoot[];
   nodes: BookmarkSnapshotNode[];
 }
 
@@ -122,7 +137,7 @@ export interface SnapshotConflict {
   isProtected: boolean;
   snapshotNodeId: string;
   candidateNodeIds: string[];
-  reason: 'duplicate-fingerprint' | 'url-changed' | 'type-changed' | 'modified-after-snapshot' | 'missing-parent' | 'unsafe-match';
+  reason: 'duplicate-fingerprint' | 'url-changed' | 'type-changed' | 'modified-after-snapshot' | 'missing-parent' | 'unsafe-match' | 'unmodifiable' | 'unsupported-type';
   message: string;
 }
 
@@ -236,4 +251,3 @@ export interface SnapshotImportValidationResult {
   contentHash?: string;
   computedHash?: string;
 }
-

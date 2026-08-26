@@ -32,14 +32,14 @@ const AboutSettings: React.FC = () => {
                             <Chip label={`v${extensionVersion}`} size="small" color="primary" sx={{ fontSize: '0.7rem', height: 20, mr: 1.5 }} />
                             <Link
                                 href="#"
-                                onClick={(e) => { e.preventDefault(); browser.tabs.create({ url: 'https://github.com/rbetree/MarksVault' }); }}
+                                onClick={(e) => { e.preventDefault(); browser.tabs.create({ url: 'https://github.com/TttXxx36/MarksVault' }); }}
                                 sx={{ color: 'text.secondary', '&:hover': { color: 'primary.main' }, display: 'flex', mr: 1.5 }}
                             >
                                 <GitHubIcon sx={{ fontSize: 18 }} />
                             </Link>
                             <Link
                                 href="#"
-                                onClick={(e) => { e.preventDefault(); browser.tabs.create({ url: 'https://github.com/rbetree/MarksVault/issues' }); }}
+                                onClick={(e) => { e.preventDefault(); browser.tabs.create({ url: 'https://github.com/TttXxx36/MarksVault/issues' }); }}
                                 sx={{ color: 'text.secondary', '&:hover': { color: 'error.main' }, display: 'flex' }}
                             >
                                 <BugReportIcon sx={{ fontSize: 18 }} />

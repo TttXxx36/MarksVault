@@ -3,8 +3,9 @@
  * 负责实现书签整理操作，如移动、删除、重命名和验证
  */
 
-import { BookmarkItem } from '../utils/bookmark-service';
+import { BookmarkItem, isBookmarkNode } from '../utils/bookmark-service';
 import bookmarkService from '../utils/bookmark-service';
+import { browser } from 'wxt/browser';
 
 // 整理操作类型
 export type OrganizeOperationType = 'move' | 'delete' | 'rename' | 'validate' | 'tag';
@@ -40,6 +41,7 @@ class OrganizeService {
   private static instance: OrganizeService;
   private readonly VALIDATION_TIMEOUT_MS = 8000;
   private readonly VALIDATION_CONCURRENCY = 5;
+  private readonly onlinePermissionCache = new Map<string, Promise<boolean>>();
   
   /**
    * 私有构造函数，防止直接实例化
@@ -82,6 +84,39 @@ class OrganizeService {
     return true;
   }
 
+  /**
+   * 在线检查是显式的高权限功能。Chromium 在首次检查某个 origin 时请求
+   * 精确 host permission；浏览器不提供 permissions API 时交给 fetch/CORS
+   * 判定，绝不把 opaque no-cors 响应当成成功。
+   */
+  private async ensureOnlinePermission(parsedUrl: URL): Promise<boolean> {
+    const permissionsApi = (browser as unknown as {
+      permissions?: {
+        contains?: (permissions: { origins?: string[] }) => Promise<boolean>;
+        request?: (permissions: { origins?: string[] }) => Promise<boolean>;
+      };
+    }).permissions;
+    if (!permissionsApi?.request && !permissionsApi?.contains) return true;
+
+    const origin = parsedUrl.origin;
+    const pattern = `${origin}/*`;
+    const existing = this.onlinePermissionCache.get(pattern);
+    if (existing) return existing;
+
+    const request = (async () => {
+      if (permissionsApi.contains && await permissionsApi.contains({ origins: [pattern] })) return true;
+      if (!permissionsApi.request) return false;
+      return permissionsApi.request({ origins: [pattern] });
+    })();
+    this.onlinePermissionCache.set(pattern, request);
+    try {
+      return await request;
+    } catch {
+      this.onlinePermissionCache.delete(pattern);
+      return false;
+    }
+  }
+
   private async validateBookmarkUrl(url: string): Promise<{ valid: boolean; reason?: string }> {
     let parsedUrl: URL;
     try {
@@ -92,6 +127,10 @@ class OrganizeService {
 
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       return { valid: false, reason: `不支持的协议: ${parsedUrl.protocol}` };
+    }
+
+    if (!await this.ensureOnlinePermission(parsedUrl)) {
+      return { valid: false, reason: '在线检查权限被拒绝或未授予' };
     }
 
     try {
@@ -108,18 +147,25 @@ class OrganizeService {
       return { valid: false, reason: `HTTP ${headResponse.status}` };
     } catch (headError) {
       try {
-        // 某些站点会拒绝 HEAD/CORS；回退到 no-cors GET，能连通即视为可访问。
-        await this.fetchWithTimeout(url, {
+        // 某些站点会拒绝 HEAD；使用可检查响应的 GET 回退。不能使用
+        // no-cors：opaque/status=0 没有可验证的 HTTP 结果。
+        const getResponse = await this.fetchWithTimeout(url, {
           method: 'GET',
-          mode: 'no-cors',
           redirect: 'follow',
           cache: 'no-store',
         });
-        return { valid: true };
+        if (getResponse.type === 'opaque' || getResponse.status === 0) {
+          return { valid: false, reason: '响应不可验证（可能是跨域策略或权限不足）' };
+        }
+        return this.isReachableStatus(getResponse.status)
+          ? { valid: true }
+          : { valid: false, reason: `HTTP ${getResponse.status}` };
       } catch (getError) {
         return {
           valid: false,
-          reason: getError instanceof Error ? getError.message : String(getError),
+          reason: getError instanceof Error
+            ? `在线检查失败（权限或跨域策略）：${getError.message}`
+            : `在线检查失败（权限或跨域策略）：${String(getError)}`,
         };
       }
     }
@@ -204,7 +250,7 @@ class OrganizeService {
     
     const flattenBookmarks = (items: BookmarkItem[]) => {
       for (const item of items) {
-        if (!item.isFolder) {
+        if (isBookmarkNode(item)) {
           allBookmarks.push(item);
         }
         

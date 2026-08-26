@@ -2,15 +2,20 @@ jest.mock('wxt/browser', () => ({
   browser: {
     storage: {
       local: {
-        get: jest.fn(),
-        set: jest.fn(),
-        clear: jest.fn(),
+      get: jest.fn(),
+      set: jest.fn(),
+      clear: jest.fn(),
+      remove: jest.fn(),
       },
       sync: {
-        get: jest.fn(),
-        set: jest.fn(),
-        clear: jest.fn(),
+      get: jest.fn(),
+      set: jest.fn(),
+      clear: jest.fn(),
+      remove: jest.fn(),
       },
+    },
+    runtime: {
+      getManifest: jest.fn(() => ({ version: '2.1.0' })),
     },
   },
 }));
@@ -106,5 +111,54 @@ describe('storage-service importConfig 运行态保护', () => {
     expect(mockedLocalSet.mock.calls[0][0]).toEqual({
       settings: { syncEnabled: false, viewType: 'list' },
     });
+  });
+});
+
+describe('storage-service GitHub 凭据迁移', () => {
+  const mockedLocalGet = browser.storage.local.get as jest.Mock;
+  const mockedLocalSet = browser.storage.local.set as jest.Mock;
+  const mockedLocalRemove = browser.storage.local.remove as jest.Mock;
+  const mockedSyncGet = browser.storage.sync.get as jest.Mock;
+  const mockedSyncRemove = browser.storage.sync.remove as jest.Mock;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    let localValue: Record<string, unknown> = {};
+    mockedLocalGet.mockImplementation(() => Promise.resolve(localValue));
+    mockedLocalSet.mockImplementation((value: Record<string, unknown>) => {
+      localValue = { ...localValue, ...value };
+      return Promise.resolve();
+    });
+    mockedSyncGet.mockResolvedValue({});
+  });
+
+  test('新凭据写入 local 并清理旧 sync 值', async () => {
+    const result = await storageService.saveGitHubCredentials({ token: 'fake-token' });
+
+    expect(result.success).toBe(true);
+    expect(mockedLocalSet).toHaveBeenCalledWith({ github_credentials: { token: 'fake-token' } });
+    expect(mockedSyncRemove).toHaveBeenCalledWith('github_credentials');
+  });
+
+  test('旧 sync 凭据首次读取时迁移到 local', async () => {
+    mockedSyncGet.mockResolvedValue({ github_credentials: { token: 'legacy-token' } });
+
+    const result = await storageService.getGitHubCredentials();
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ token: 'legacy-token' });
+    expect(mockedLocalSet).toHaveBeenCalledWith({ github_credentials: { token: 'legacy-token' } });
+    expect(mockedSyncRemove).toHaveBeenCalledWith('github_credentials');
+  });
+
+  test('配置导入导出均不携带 GitHub Token', async () => {
+    mockedLocalGet.mockResolvedValue({ github_credentials: { token: 'local-token' }, settings: { syncEnabled: false, viewType: 'grid' } });
+    mockedSyncGet.mockResolvedValue({ github_credentials: { token: 'sync-token' }, other: true });
+    const exported = await storageService.exportConfig({ includeGitHubCredentials: true });
+    expect(exported.success).toBe(true);
+    expect(exported.data.local.github_credentials).toBeUndefined();
+    expect(exported.data.sync.github_credentials).toBeUndefined();
+    expect(exported.data.sync.other).toBe(true);
+    expect(mockedLocalRemove).not.toHaveBeenCalled();
   });
 });

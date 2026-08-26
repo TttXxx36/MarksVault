@@ -21,6 +21,8 @@ export interface GitHubCredentials {
   token: string;
 }
 
+export const GITHUB_CREDENTIALS_KEY = 'github_credentials';
+
 // 备份统计信息缓存类型
 export interface BackupStatsCache {
   data: {
@@ -81,6 +83,7 @@ class StorageService {
     'bookmark_write_lease',
     'execution_snapshots',
     'pending_restore_backup',
+    GITHUB_CREDENTIALS_KEY,
     'ai_provider_config',
     'ai_provider_secret',
     'ai_provider_config_draft',
@@ -291,16 +294,38 @@ class StorageService {
    * @returns Promise<StorageResult>
    */
   async saveGitHubCredentials(credentials: GitHubCredentials): Promise<StorageResult> {
+    let previousLocal: Record<string, unknown> = {};
     try {
-      await browser.storage.sync.set({ 'github_credentials': credentials });
+      if (!credentials || typeof credentials.token !== 'string' || credentials.token.trim() === '') {
+        return { success: false, error: 'GitHub凭据格式无效' };
+      }
+      previousLocal = await browser.storage.local.get(GITHUB_CREDENTIALS_KEY) as Record<string, unknown>;
+      await browser.storage.local.set({ [GITHUB_CREDENTIALS_KEY]: { token: credentials.token } });
+      const verified = await browser.storage.local.get(GITHUB_CREDENTIALS_KEY) as Record<string, unknown>;
+      const stored = verified[GITHUB_CREDENTIALS_KEY] as Partial<GitHubCredentials> | undefined;
+      if (stored?.token !== credentials.token) throw new Error('本地凭据回读校验失败');
+      // 迁移完成后才删除旧 sync 值；删除失败保留 local 值并返回可见错误，
+      // 下次读取仍可继续使用而不会丢失凭据。
+      try {
+        await browser.storage.sync.remove(GITHUB_CREDENTIALS_KEY);
+      } catch (migrationError) {
+        return { success: false, error: 'GitHub凭据已保存到本地，但清理旧同步凭据失败，请稍后重试' };
+      }
       return {
         success: true
       };
     } catch (error) {
-      console.error('保存GitHub凭据失败:', error);
+      // 保留原值；若本次 set 已写入不完整数据，恢复之前的 local 值。
+      try {
+        if (Object.prototype.hasOwnProperty.call(previousLocal, GITHUB_CREDENTIALS_KEY)) {
+          await browser.storage.local.set(previousLocal);
+        } else {
+          await browser.storage.local.remove(GITHUB_CREDENTIALS_KEY);
+        }
+      } catch { /* 保留错误结果，不泄露凭据 */ }
       return {
         success: false,
-        error: '保存GitHub凭据失败: ' + (error instanceof Error ? error.message : String(error))
+        error: '保存GitHub凭据失败，请检查本地存储空间或权限'
       };
     }
   }
@@ -311,16 +336,29 @@ class StorageService {
    */
   async getGitHubCredentials(): Promise<StorageResult> {
     try {
-      const result = await browser.storage.sync.get('github_credentials');
+      const localResult = await browser.storage.local.get(GITHUB_CREDENTIALS_KEY) as Record<string, unknown>;
+      const localCredentials = localResult[GITHUB_CREDENTIALS_KEY] as GitHubCredentials | undefined;
+      if (localCredentials && typeof localCredentials.token === 'string' && localCredentials.token.length > 0) {
+        return { success: true, data: localCredentials };
+      }
+      const result = await browser.storage.sync.get(GITHUB_CREDENTIALS_KEY);
+      const legacy = result[GITHUB_CREDENTIALS_KEY] as GitHubCredentials | undefined;
+      if (legacy && typeof legacy.token === 'string' && legacy.token.length > 0) {
+        const migration = await this.saveGitHubCredentials(legacy);
+        if (!migration.success) {
+          // 迁移清理失败时仍返回旧值，避免把用户锁在 GitHub 外。
+          return { success: true, data: legacy, error: migration.error };
+        }
+        return { success: true, data: legacy };
+      }
       return {
         success: true,
-        data: result.github_credentials || null
+        data: null
       };
     } catch (error) {
-      console.error('获取GitHub凭据失败:', error);
       return {
         success: false,
-        error: '获取GitHub凭据失败: ' + (error instanceof Error ? error.message : String(error))
+        error: '获取GitHub凭据失败，请检查本地存储权限'
       };
     }
   }
@@ -331,15 +369,17 @@ class StorageService {
    */
   async clearGitHubCredentials(): Promise<StorageResult> {
     try {
-      await browser.storage.sync.remove('github_credentials');
+      await Promise.all([
+        browser.storage.local.remove(GITHUB_CREDENTIALS_KEY),
+        browser.storage.sync.remove(GITHUB_CREDENTIALS_KEY),
+      ]);
       return {
         success: true
       };
     } catch (error) {
-      console.error('清除GitHub凭据失败:', error);
       return {
         success: false,
-        error: '清除GitHub凭据失败: ' + (error instanceof Error ? error.message : String(error))
+        error: '清除GitHub凭据失败，请稍后重试'
       };
     }
   }
@@ -562,7 +602,6 @@ class StorageService {
         browser.storage.sync.get(null)
       ]);
 
-      const includeGitHubCredentials = options?.includeGitHubCredentials === true;
       const local: Record<string, any> = { ...(localAll as Record<string, any>) };
       // AI provider configuration, drafts, task checkpoints and secrets are
       // local runtime state; none should enter a portable backup file.
@@ -571,6 +610,9 @@ class StorageService {
       delete local.ai_provider_secret;
       delete local.ai_provider_secret_draft;
       delete local.ai_classification_job;
+      // GitHub Token is never portable, even when legacy callers pass the old
+      // includeGitHubCredentials option.
+      delete local[GITHUB_CREDENTIALS_KEY];
       // Snapshot contents live in IndexedDB; the local index and recovery
       // marker are runtime state and must not be copied as portable config.
       delete local.bookmark_snapshot_index;
@@ -578,10 +620,7 @@ class StorageService {
       delete local.bookmark_snapshot_migration;
       delete local.bookmark_snapshot_recent_state;
       const sync: Record<string, any> = { ...syncAll };
-      if (!includeGitHubCredentials) {
-        // 默认不导出 token，避免用户误分享备份文件导致泄露
-        delete sync.github_credentials;
-      }
+      delete sync[GITHUB_CREDENTIALS_KEY];
 
       let localStorageData: Record<string, string> | undefined;
       if (options?.includeLocalStorage && typeof localStorage !== 'undefined') {
@@ -669,6 +708,7 @@ class StorageService {
         const importedLocal = { ...(data.local as Record<string, any>) };
         // 配置文件可能来自旧版本或手工编辑，禁止导入 AI secret。
         delete importedLocal.ai_provider_secret;
+        delete importedLocal[GITHUB_CREDENTIALS_KEY];
         if (importedLocal.ai_provider_config && typeof importedLocal.ai_provider_config === 'object') {
           importedLocal.ai_provider_config = { ...(importedLocal.ai_provider_config as Record<string, any>) };
           delete importedLocal.ai_provider_config.apiKey;
@@ -682,7 +722,8 @@ class StorageService {
 
       // 2) 合并导入 sync（不清空）
       if (data.sync && typeof data.sync === 'object' && !Array.isArray(data.sync)) {
-        const syncData = data.sync as Record<string, any>;
+        const syncData = { ...(data.sync as Record<string, any>) };
+        delete syncData[GITHUB_CREDENTIALS_KEY];
         if (Object.keys(syncData).length > 0) {
           await browser.storage.sync.set(syncData);
         }

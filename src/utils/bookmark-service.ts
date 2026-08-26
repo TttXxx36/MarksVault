@@ -2,6 +2,8 @@
 import { browser, type Browser } from 'wxt/browser';
 import { getBookmarkFuzzyScoreByNormalizedQuery, normalizeSearchText } from './bookmark-search-utils';
 
+export type BookmarkNodeType = 'bookmark' | 'folder' | 'separator';
+
 export interface BookmarkItem {
   id: string;
   parentId?: string;
@@ -12,7 +14,23 @@ export interface BookmarkItem {
   dateGroupModified?: number;
   index?: number;
   isFolder: boolean;
+  /** Native WebExtension node type; kept optional for v1 fixture compatibility. */
+  type?: BookmarkNodeType;
+  /** Firefox/managed-policy nodes may be read but not mutated. */
+  unmodifiable?: string;
 }
+
+export const isBookmarkNode = (item: Pick<BookmarkItem, 'type' | 'url' | 'isFolder'>): boolean =>
+  (item.type ? item.type === 'bookmark' : Boolean(item.url) && !item.isFolder);
+
+export const getBookmarkNodeType = (node: Browser.bookmarks.BookmarkTreeNode): BookmarkNodeType => {
+  const nativeType = (node as unknown as { type?: string }).type;
+  if (nativeType === 'bookmark' || nativeType === 'folder' || nativeType === 'separator') return nativeType;
+  if (node.url) return 'bookmark';
+  // Folder nodes expose a children array, including when empty. A URL-less
+  // node without children is the Firefox separator shape.
+  return Array.isArray(node.children) ? 'folder' : 'separator';
+};
 
 // 书签操作结果类型
 export interface BookmarkResult {
@@ -68,6 +86,7 @@ class BookmarkService {
   }
 
   private toBookmarkItem(node: Browser.bookmarks.BookmarkTreeNode): BookmarkItem {
+    const type = getBookmarkNodeType(node);
     return {
       id: node.id,
       parentId: node.parentId,
@@ -76,7 +95,9 @@ class BookmarkService {
       dateAdded: node.dateAdded,
       dateGroupModified: node.dateGroupModified,
       index: node.index,
-      isFolder: !node.url
+      isFolder: type === 'folder',
+      type,
+      unmodifiable: (node as unknown as { unmodifiable?: string }).unmodifiable,
     };
   }
 
@@ -194,7 +215,9 @@ class BookmarkService {
         dateAdded: node.dateAdded,
         dateGroupModified: node.dateGroupModified,
         index: node.index,
-        isFolder: !node.url
+        isFolder: getBookmarkNodeType(node) === 'folder',
+        type: getBookmarkNodeType(node),
+        unmodifiable: (node as unknown as { unmodifiable?: string }).unmodifiable,
       };
 
       if (node.children && node.children.length > 0) {
@@ -360,7 +383,8 @@ class BookmarkService {
           parentId: updatedBookmark.parentId,
           title: updatedBookmark.title,
           url: updatedBookmark.url,
-          isFolder: !updatedBookmark.url
+          isFolder: getBookmarkNodeType(updatedBookmark) === 'folder',
+          type: getBookmarkNodeType(updatedBookmark),
         }
       };
     } catch (error) {
@@ -432,7 +456,8 @@ class BookmarkService {
           title: movedBookmark.title,
           url: movedBookmark.url,
           index: movedBookmark.index,
-          isFolder: !movedBookmark.url
+          isFolder: getBookmarkNodeType(movedBookmark) === 'folder',
+          type: getBookmarkNodeType(movedBookmark),
         }
       };
     } catch (error) {

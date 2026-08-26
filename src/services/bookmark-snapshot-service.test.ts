@@ -6,6 +6,7 @@ import {
   exportBookmarkSnapshot,
   importBookmarkSnapshot,
   loadSnapshotIndex,
+  getSnapshotStorageSummary,
   validateSnapshot,
 } from './bookmark-snapshot-service';
 
@@ -48,6 +49,26 @@ describe('bookmark snapshot domain', () => {
     expect(snapshot.contentHash).toMatch(/^[0-9a-f]{64}$/);
     expect(JSON.stringify(snapshot)).not.toMatch(/api.?key|token|secret/i);
     expect((await loadSnapshotIndex()).entries).toHaveLength(1);
+    expect(snapshot.roots?.[0]).toMatchObject({ role: 'toolbar', nativeId: '1', nodeIds: ['1', '10'] });
+  });
+
+  it('preserves Firefox separators and managed/unmodifiable metadata without treating them as folders', async () => {
+    browser.bookmarks.getTree = async () => ([{
+      id: 'root________',
+      title: '',
+      children: [{
+        id: 'toolbar_____',
+        title: 'Bookmarks Toolbar',
+        children: [
+          { id: 'separator-1', title: '', type: 'separator' },
+          { id: 'managed-1', title: 'Managed', type: 'folder', unmodifiable: 'managed', children: [] },
+        ],
+      }],
+    }] as never);
+    const snapshot = await createBookmarkSnapshot({ repository: new MemorySnapshotRepository(), source: 'manual', name: 'firefox-fixture' });
+    expect(snapshot.nodes.find(node => node.id === 'separator-1')).toMatchObject({ type: 'separator' });
+    expect(snapshot.nodes.find(node => node.id === 'managed-1')).toMatchObject({ type: 'folder', unmodifiable: 'managed' });
+    expect((await validateSnapshot(snapshot)).valid).toBe(true);
   });
 
   it('retains the newest 20 automatic snapshots while preserving named snapshots', async () => {
@@ -89,5 +110,14 @@ describe('bookmark snapshot domain', () => {
     expect(metrics.contentHash).toMatch(/^[0-9a-f]{64}$/);
     // This is a regression baseline, not a machine-specific hard SLA.
     expect(elapsed).toBeLessThan(10000);
+  });
+
+  it('reports capacity warning state without silently deleting protected snapshots', async () => {
+    const repository = new MemorySnapshotRepository();
+    await createBookmarkSnapshot({ repository, source: 'manual', name: 'protected', now: 1 });
+    const summary = await getSnapshotStorageSummary({ warnAtBytes: 1, rejectAtBytes: Number.MAX_SAFE_INTEGER });
+    expect(summary.warning).toBe(true);
+    expect(summary.protectedCount).toBe(1);
+    expect((await loadSnapshotIndex()).entries.some(entry => entry.name === 'protected')).toBe(true);
   });
 });

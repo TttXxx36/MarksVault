@@ -3,6 +3,7 @@ import bookmarkService, { BookmarkItem } from '../utils/bookmark-service';
 
 jest.mock('../utils/bookmark-service', () => ({
   __esModule: true,
+  isBookmarkNode: (item: BookmarkItem) => item?.type === 'bookmark' || (!item?.type && Boolean(item?.url) && !item?.isFolder),
   default: {
     getAllBookmarks: jest.fn(),
     removeBookmark: jest.fn(),
@@ -125,12 +126,13 @@ describe('organize-service 失败处理', () => {
     expect(result.details).toContain('异常 1 个');
   });
 
-  test('validate 分支在 HEAD 失败时应回退 GET(no-cors)', async () => {
+  test('validate 分支在 HEAD 失败时回退到可验证的 GET', async () => {
     mockedFetch
       .mockRejectedValueOnce(new Error('HEAD blocked'))
       .mockResolvedValueOnce({
-        ok: false,
-        status: 0,
+        ok: true,
+        status: 200,
+        type: 'basic',
       } as any);
 
     const [result] = await organizeService.organizeBookmarks([
@@ -145,5 +147,27 @@ describe('organize-service 失败处理', () => {
     expect(mockedFetch).toHaveBeenCalledTimes(2);
     expect(mockedFetch.mock.calls[0][1].method).toBe('HEAD');
     expect(mockedFetch.mock.calls[1][1].method).toBe('GET');
+    expect(mockedFetch.mock.calls[1][1].mode).toBeUndefined();
+  });
+
+  test('opaque/status=0 的 GET 结果不能被当作在线可达', async () => {
+    mockedFetch
+      .mockRejectedValueOnce(new Error('HEAD blocked'))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 0,
+        type: 'opaque',
+      } as any);
+
+    const [result] = await organizeService.organizeBookmarks([
+      {
+        operation: 'validate',
+        filters: { pattern: 'example.com' },
+      },
+    ]);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('验证失败');
+    expect(result.details).toContain('跨域策略');
   });
 });

@@ -16,6 +16,7 @@ type NativeBookmarkNode = {
   title: string;
   url?: string;
   index?: number;
+  type?: 'bookmark' | 'folder' | 'separator';
   unmodifiable?: string;
   children?: NativeBookmarkNode[];
 };
@@ -32,13 +33,19 @@ const createId = (): string => {
   return 'ai-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
 };
 
-const isFolder = (node: NativeBookmarkNode): boolean => !node.url;
+const getNodeType = (node: NativeBookmarkNode): 'bookmark' | 'folder' | 'separator' => {
+  if (node.type === 'bookmark' || node.type === 'folder' || node.type === 'separator') return node.type;
+  if (node.url) return 'bookmark';
+  return Array.isArray(node.children) ? 'folder' : 'separator';
+};
+
+const isFolder = (node: NativeBookmarkNode): boolean => getNodeType(node) === 'folder';
 
 const collectLeaves = (nodes: NativeBookmarkNode[], parentPath = ''): AiBookmarkInput[] => {
   const result: AiBookmarkInput[] = [];
   for (const node of nodes) {
     const currentPath = parentPath ? parentPath + ' / ' + node.title : node.title;
-    if (node.url) {
+    if (getNodeType(node) === 'bookmark' && node.url) {
       result.push({
         id: node.id,
         title: node.title,

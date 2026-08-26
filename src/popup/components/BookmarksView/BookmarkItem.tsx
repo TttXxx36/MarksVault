@@ -122,6 +122,8 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
   onCopyLink,
   duplicateUrlCounts
 }) => {
+  const isSeparator = bookmark.type === 'separator';
+  const isReadonly = isSeparator || Boolean(bookmark.unmodifiable);
   const [menuAnchorPosition, setMenuAnchorPosition] = useState<{ top: number; left: number } | null>(null);
   const isMenuOpen = Boolean(menuAnchorPosition);
   const [pathTitle, setPathTitle] = useState<string>('');
@@ -198,7 +200,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
     bookmark,
     layoutType: 'list',
     index,
-    onMoveBookmark
+    onMoveBookmark: isReadonly ? undefined : onMoveBookmark,
   });
 
   const handleContextMenu = (event: React.MouseEvent) => {
@@ -225,7 +227,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
   const handleEditClick = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    if (onEdit) {
+    if (!isReadonly && onEdit) {
       onEdit(bookmark);
     }
   };
@@ -233,7 +235,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
   const handleDeleteClick = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    if (onDelete) {
+    if (!isReadonly && onDelete) {
       onDelete(bookmark);
     }
   };
@@ -276,7 +278,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
   const handleUpdateToCurrentUrl = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    onUpdateToCurrentUrl?.(bookmark.id);
+    if (!isReadonly) onUpdateToCurrentUrl?.(bookmark.id);
   };
 
   const handleCopyLinkClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -286,6 +288,10 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
       onCopyLink(bookmark.url);
     }
   };
+
+  if (isSeparator) {
+    return <ListItem disablePadding data-search-index={index} aria-label="书签分隔线"><Divider flexItem sx={{ width: '100%', my: 0.5 }} /></ListItem>;
+  }
 
   return (
     <ListItem
@@ -299,7 +305,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
           onMouseEnter={handleMouseEnter}
           onContextMenu={handleContextMenu}
           data-isover={isOver && interactionMode === 'move'} // 使用data-*属性
-          draggable={true} // 允许文件夹拖拽
+          draggable={!isReadonly} // 受保护节点不可拖拽
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
           onDragEnter={handleDragEnter}
@@ -336,7 +342,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
           onClick={handleItemClick}
           onMouseEnter={handleMouseEnter}
           onContextMenu={handleContextMenu}
-          draggable={true}
+          draggable={!isReadonly}
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
           onDragEnter={handleDragEnter}
@@ -469,7 +475,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
         {!bookmark.isFolder && (
           <MenuItem
             onClick={handleUpdateToCurrentUrl}
-            disabled={!onUpdateToCurrentUrl}
+            disabled={isReadonly || !onUpdateToCurrentUrl}
             sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
           >
             <ListItemIcon sx={{ minWidth: '28px' }}>
@@ -483,6 +489,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
 
         <MenuItem
           onClick={handleEditClick}
+          disabled={isReadonly}
           sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
         >
           <ListItemIcon sx={{ minWidth: '28px' }}>
@@ -495,6 +502,7 @@ const BookmarkItem: React.FC<BookmarkItemProps> = ({
 
         <MenuItem
           onClick={handleDeleteClick}
+          disabled={isReadonly}
           sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
         >
           <ListItemIcon sx={{ minWidth: '28px' }}>

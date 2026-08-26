@@ -2,9 +2,9 @@
 
 > 文档状态：Approved for implementation planning  
 > 目标仓库：`TttXxx36/MarksVault`  
-> 审计基线：`main@6b946bc0ef82b59eb7fc1d5e6fa50ef104ccf5d1`  
-> 基线版本：`1.5.0`  
-> 编写日期：2026-08-25  
+> 审计基线：`main@13d4be83307a889c4a88a5fda4171b701b0a940b`  
+> 初始规划版本：`1.5.0`；当前实现版本：`2.1.0`  
+> 编写日期：2026-08-25；最近审计：2026-08-26  
 > 主要执行代理：GPT-5.6 Luna（后续实现时）
 
 ## 1. 文档目的
@@ -82,10 +82,10 @@
 
 ### 3.2 代码规模
 
-- 约 80 个生产 TypeScript/TSX 文件；
-- 生产代码约 23,300 行；
-- 测试代码约 3,300 行；
-- 现有测试约 113 个；
+- 当前 91 个生产 TypeScript/TSX 文件（不含测试文件）；
+- 生产代码约 27,716 行；
+- 测试代码约 4,262 行，18 个测试文件；
+- 当前 Jest 测试 157 个；
 - 当前未发现生产模块循环依赖；
 - 当前未发现 `eval`、`new Function` 或 `dangerouslySetInnerHTML`。
 
@@ -109,10 +109,18 @@
 
 ### 3.4 发布差距
 
-- 源码版本已经是 `1.5.0`，但原项目最后公开 Release 仍为 `1.0.0`。
-- `TttXxx36/MarksVault` 当前没有自己的 Release、Tag 和 Actions 运行记录。
-- 当前 `build.yml` 只执行 Chrome 构建，不执行 lint 和 Firefox/Edge 构建。
-- README 和 Release 工作流仍有多处链接指向 `rbetree/MarksVault`。
+截至 2026-08-26，v1.6.0、v2.0.0、v2.0.1 和 v2.1.0 均已有独立标签、Release 和生产资产；三端构建、Manifest 检查和 Firefox lint 已纳入质量门槛。`docs/BASELINE.md` 记录了可复现命令和结果，README 大图已移出安装包。
+
+本次审计仍发现以下尚未完全收敛的计划项，不能标记为“全部完成”：
+
+- 旧 GitHub 恢复路径仍未完全迁移到语义根目录、统一 RestorePlan 和逐项 journal；
+- 旧版 GitHub 备份 schema 仍未全面迁移到 §7.2 的语义根目录 v2 格式，当前快照域模型已先覆盖本地历史恢复；
+- `src/utils/bookmark-service.ts` 和本地快照模型现在保留 separator/unmodifiable，但跨浏览器根目录恢复、未知根目录保底导入文件夹仍需完整集成测试；
+- GitHub 客户端已补齐 API 版本头、Bearer、超时/AbortSignal、大文件 raw 读取、目录分页和一次性冲突重读；`Retry-After`/限流元数据结构化暴露和统一错误模型仍待架构切片；
+- `organize-service.ts` 的在线检查已移除 no-cors 回退，改为精确 origin 权限请求并拒绝 opaque/status=0 结果；全库在线检查的权限拒绝 UI 仍需端到端验证；
+- Firefox 已声明 MV2 `optional_permissions`、稳定 ID 和数据收集字段，但 AMO 实际提交前仍需用发布者账号做一次人工审核；
+- 快照列表已增加容量提示和显式删除入口，但旧版恢复入口尚未统一到同一历史恢复 UI；
+- Phase 4 的 core/adapters/storage 目录收敛、统一运行时 schema 和日志服务仍是后续架构切片。
 
 ## 4. 不可违反的安全约束
 

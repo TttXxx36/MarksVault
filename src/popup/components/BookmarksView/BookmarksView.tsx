@@ -5,7 +5,7 @@ import BookmarkList from './BookmarkList';
 import PageLayout from '../shared/PageLayout';
 import { BookmarksHeader } from './BookmarksHeader';
 import { ToastRef } from '../shared/Toast';
-import bookmarkService, { BookmarkItem, BookmarkResult, findBookmarkBar } from '../../../utils/bookmark-service';
+import bookmarkService, { BookmarkItem, BookmarkResult, findBookmarkBar, getBookmarkNodeType } from '../../../utils/bookmark-service';
 import storageService, { UserSettings } from '../../../utils/storage-service';
 import { getDuplicateUrlCounts, sortBookmarkItems, type BookmarkSortOrder } from '../../../utils/bookmark-search-utils';
 
@@ -614,6 +614,7 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
 
     const handleCreated = (_id: string, node: Browser.bookmarks.BookmarkTreeNode) => {
       pathCacheRef.current.clear();
+      const type = getBookmarkNodeType(node);
       const item: BookmarkItem = {
         id: node.id,
         parentId: node.parentId,
@@ -622,9 +623,11 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
         dateAdded: node.dateAdded,
         dateGroupModified: node.dateGroupModified,
         index: node.index,
-        isFolder: !node.url,
+        isFolder: type === 'folder',
+        type,
+        unmodifiable: (node as unknown as { unmodifiable?: string }).unmodifiable,
         // 新建文件夹默认 children 为空数组，避免 UI 端 folderItemCount 为空
-        children: node.url ? undefined : [],
+        children: type === 'folder' ? [] : undefined,
       };
 
       upsertBookmarkInMap(item);
@@ -659,13 +662,16 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
         dateAdded: existing?.dateAdded,
         dateGroupModified: existing?.dateGroupModified,
         index: existing?.index,
-        isFolder: existing?.isFolder ?? false,
+        isFolder: existing?.isFolder ?? Boolean(changeInfo.url === undefined && !existing?.url),
+        type: existing?.type ?? (changeInfo.url ? 'bookmark' : 'folder'),
+        unmodifiable: existing?.unmodifiable,
         children: existing?.children,
       };
 
       // changeInfo.url 只有在 url 变化时才会出现；否则不能据此推断 isFolder
       if (changeInfo.url !== undefined) {
         updated.isFolder = !changeInfo.url;
+        updated.type = changeInfo.url ? 'bookmark' : 'folder';
       }
 
       upsertBookmarkInMap(updated);
@@ -680,6 +686,8 @@ const BookmarksView: React.FC<BookmarksViewProps> = ({ toastRef }) => {
             title: updated.title,
             url: updated.url,
             isFolder: updated.isFolder,
+            type: updated.type,
+            unmodifiable: updated.unmodifiable,
           };
         });
         return changed ? next : list;

@@ -5,7 +5,7 @@ import { useFaviconRefresh } from '../shared/FaviconRefreshContext';
 /**
  * favicon 加载（无回退）：
  * - Chromium：仅使用 `_favicon`（依赖浏览器缓存）
- * - Firefox：仍由 `getFaviconUrl` 内部决定（通常为 Google favicon 服务）
+ * - Firefox：由 `getFaviconUrl` 返回本地空值，使用 UI 默认占位图，不请求第三方服务
  */
 export const useFavicon = (params: { url?: string; isFolder?: boolean }) => {
   const url = params.url ?? '';

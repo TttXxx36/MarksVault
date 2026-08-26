@@ -24,7 +24,7 @@ class VersionService {
   private static instance: VersionService;
   
   // GitHub 仓库信息
-  private readonly GITHUB_OWNER = 'rbetree';
+  private readonly GITHUB_OWNER = 'TttXxx36';
   private readonly GITHUB_REPO = 'MarksVault';
   private readonly GITHUB_API_URL = `https://api.github.com/repos/${this.GITHUB_OWNER}/${this.GITHUB_REPO}/releases/latest`;
   

@@ -138,6 +138,8 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   onCopyLink,
   duplicateUrlCounts
 }) => {
+  const isSeparator = bookmark.type === 'separator';
+  const isReadonly = isSeparator || Boolean(bookmark.unmodifiable);
   const [menuAnchorPosition, setMenuAnchorPosition] = useState<{ top: number; left: number } | null>(null);
   const isMenuOpen = Boolean(menuAnchorPosition);
   const [pathTitle, setPathTitle] = useState<string>('');
@@ -192,7 +194,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
     bookmark,
     layoutType: 'grid',
     index,
-    onMoveBookmark
+    onMoveBookmark: isReadonly ? undefined : onMoveBookmark,
   });
 
   const handleContextMenu = (event: React.MouseEvent) => {
@@ -219,7 +221,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   const handleEditClick = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    if (onEdit) {
+    if (!isReadonly && onEdit) {
       onEdit(bookmark);
     }
   };
@@ -227,7 +229,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   const handleDeleteClick = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    if (onDelete) {
+    if (!isReadonly && onDelete) {
       onDelete(bookmark);
     }
   };
@@ -269,7 +271,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
   const handleUpdateToCurrentUrl = (event: React.MouseEvent<HTMLElement>) => {
     event.stopPropagation();
     handleMenuClose();
-    onUpdateToCurrentUrl?.(bookmark.id);
+    if (!isReadonly) onUpdateToCurrentUrl?.(bookmark.id);
   };
 
   const handleCopyLinkClick = (event: React.MouseEvent<HTMLElement>) => {
@@ -280,11 +282,15 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
     }
   };
 
+  if (isSeparator) {
+    return <GridItemContainer data-search-index={index} aria-label="书签分隔线" sx={{ minHeight: '12px', cursor: 'default' }}><Divider flexItem sx={{ width: '100%' }} /></GridItemContainer>;
+  }
+
   return (
     <GridItemContainer
       onClick={handleItemClick}
       onMouseEnter={handleMouseEnter}
-      draggable={true} // 所有项目都可拖拽，包括文件夹
+      draggable={!isReadonly}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnter={handleDragEnter}
@@ -423,7 +429,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
         {!bookmark.isFolder && (
           <MenuItem
             onClick={handleUpdateToCurrentUrl}
-            disabled={!onUpdateToCurrentUrl}
+            disabled={isReadonly || !onUpdateToCurrentUrl}
             sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
           >
             <ListItemIcon sx={{ minWidth: '28px' }}>
@@ -437,6 +443,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
 
         <MenuItem
           onClick={handleEditClick}
+          disabled={isReadonly}
           sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
         >
           <ListItemIcon sx={{ minWidth: '28px' }}>
@@ -449,6 +456,7 @@ const BookmarkGridItem: React.FC<BookmarkGridItemProps> = ({
 
         <MenuItem
           onClick={handleDeleteClick}
+          disabled={isReadonly}
           sx={{ minHeight: '32px', py: 0.5, px: 1.5 }}
         >
           <ListItemIcon sx={{ minWidth: '28px' }}>

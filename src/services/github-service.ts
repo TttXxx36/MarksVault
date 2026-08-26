@@ -55,7 +55,10 @@ export function isRetryableGitHubError(error: unknown): boolean {
 
 export class GitHubService {
   private static instance: GitHubService;
-  private baseUrl = 'https://api.github.com';
+  private readonly baseUrl = 'https://api.github.com';
+  private readonly apiVersion = '2022-11-28';
+  private readonly requestTimeoutMs = 30_000;
+  private readonly maxFileBytes = 20 * 1024 * 1024;
   
   private constructor() {}
   
@@ -95,8 +98,9 @@ export class GitHubService {
    */
   private getAuthHeaders(credentials: GitHubCredentials): Headers {
     const headers = new Headers();
-    headers.append('Accept', 'application/vnd.github.v3+json');
-    headers.append('Authorization', `token ${credentials.token}`);
+    headers.append('Accept', 'application/vnd.github+json');
+    headers.append('Authorization', `Bearer ${credentials.token}`);
+    headers.append('X-GitHub-Api-Version', this.apiVersion);
     return headers;
   }
 
@@ -119,14 +123,49 @@ export class GitHubService {
    * @returns 响应对象
    */
   private async fetchWithRetryClassification(url: string, init: RequestInit | undefined, context: string): Promise<Response> {
+    const controller = new AbortController();
+    const callerSignal = init?.signal;
+    let callerAbort: (() => void) | undefined;
+    if (callerSignal) {
+      if (callerSignal.aborted) controller.abort(callerSignal.reason);
+      else {
+        callerAbort = () => controller.abort(callerSignal.reason);
+        callerSignal.addEventListener('abort', callerAbort, { once: true });
+      }
+    }
+    const timeoutHandle = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     try {
-      return await fetch(url, init);
+      return await fetch(url, { ...init, signal: controller.signal });
     } catch (error) {
+      if (controller.signal.aborted && !callerSignal?.aborted) {
+        throw new RetryableError(RetryableErrorCategory.NETWORK, `${context}超时`);
+      }
       if (error instanceof TypeError) {
         throw new RetryableError(RetryableErrorCategory.NETWORK, `${context}网络错误: ${error.message}`);
       }
       throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      if (callerSignal && callerAbort) callerSignal.removeEventListener('abort', callerAbort);
     }
+  }
+
+  private async getLatestFileSha(
+    credentials: GitHubCredentials,
+    owner: string,
+    repo: string,
+    path: string,
+  ): Promise<string | undefined> {
+    const response = await this.fetchWithRetryClassification(
+      `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`,
+      { method: 'GET', headers: this.getAuthHeaders(credentials) },
+      '重新读取文件版本',
+    );
+    if (!response.ok) {
+      await this.throwForErrorResponse(response, '重新读取文件版本');
+    }
+    const data = await response.json() as { sha?: unknown };
+    return typeof data.sha === 'string' ? data.sha : undefined;
   }
 
   /**
@@ -183,33 +222,40 @@ export class GitHubService {
     sha?: string
   ): Promise<any> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${this.encodePathSegments(path)}`;
+    const url = `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`;
     
     // Base64编码内容
     const contentEncoded = btoa(unescape(encodeURIComponent(content)));
     
-    const body: any = {
-      message,
-      content: contentEncoded,
-    };
-    
-    // 如果提供了SHA，添加到请求体中（表示更新现有文件）
-    if (sha) {
-      body.sha = sha;
-    }
-    
     try {
-      const response = await this.fetchWithRetryClassification(url, {
-        method: 'PUT',
-        headers,
-        body: JSON.stringify(body)
-      }, '创建或更新文件');
-      
-      if (!response.ok) {
+      let currentSha = sha;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const body: Record<string, string> = {
+          message,
+          content: contentEncoded,
+        };
+        if (currentSha) body.sha = currentSha;
+
+        const response = await this.fetchWithRetryClassification(url, {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(body)
+        }, '创建或更新文件');
+
+        if (response.ok) return await response.json();
+
+        // 仅对版本冲突/Contents API 的可恢复 422 重读 SHA 并重试一次，
+        // 防止重复提交风暴；其他 422 仍按不可重试错误返回。
+        if ((response.status === 409 || response.status === 422) && attempt === 0) {
+          const latestSha = await this.getLatestFileSha(credentials, owner, repo, path);
+          if (latestSha) {
+            currentSha = latestSha;
+            continue;
+          }
+        }
         await this.throwForErrorResponse(response, '创建或更新文件');
       }
-      
-      return await response.json();
+      throw new GitHubApiError(409, '创建或更新文件失败：重试次数已用尽');
     } catch (error) {
       console.error('Creating/updating file failed:', error);
       throw error;
@@ -231,7 +277,7 @@ export class GitHubService {
     path: string
   ): Promise<{ content: string; sha: string; metadata: any }> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${repo}/contents/${this.encodePathSegments(path)}`;
+    const url = `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`;
     
     try {
       const response = await this.fetchWithRetryClassification(url, {
@@ -243,18 +289,50 @@ export class GitHubService {
         await this.throwForErrorResponse(response, '获取文件内容');
       }
       
-      const data = await response.json();
-      
-      // GitHub返回的内容是Base64编码的
-      const content = decodeURIComponent(escape(atob(data.content)));
+      const data = await response.json() as {
+        content?: unknown;
+        sha?: unknown;
+        name?: unknown;
+        path?: unknown;
+        size?: unknown;
+        html_url?: unknown;
+        download_url?: unknown;
+      };
+      const declaredSize = typeof data.size === 'number' ? data.size : 0;
+      if (declaredSize > this.maxFileBytes) {
+        throw new GitHubApiError(413, `备份文件超过安全上限 ${this.maxFileBytes} 字节`);
+      }
+
+      let content: string;
+      if (declaredSize > 1_000_000 || typeof data.content !== 'string') {
+        // Contents API 对大于 1 MB 的文件可能不返回 Base64 content；使用
+        // raw 媒体类型读取，并在本地再次执行字节上限校验。
+        const rawUrl = typeof data.download_url === 'string' && data.download_url.startsWith('https://raw.githubusercontent.com/')
+          ? data.download_url
+          : url;
+        const rawHeaders = this.getAuthHeaders(credentials);
+        rawHeaders.set('Accept', 'application/vnd.github.raw+json');
+        const rawResponse = await this.fetchWithRetryClassification(rawUrl, {
+          method: 'GET',
+          headers: rawHeaders,
+        }, '获取大文件内容');
+        if (!rawResponse.ok) await this.throwForErrorResponse(rawResponse, '获取大文件内容');
+        content = await rawResponse.text();
+        if (new TextEncoder().encode(content).byteLength > this.maxFileBytes) {
+          throw new GitHubApiError(413, `备份文件超过安全上限 ${this.maxFileBytes} 字节`);
+        }
+      } else {
+        // GitHub 返回的内容是 Base64 编码的。
+        content = decodeURIComponent(escape(atob(data.content)));
+      }
       
       return {
         content,
-        sha: data.sha,
+        sha: typeof data.sha === 'string' ? data.sha : '',
         metadata: {
           name: data.name,
           path: data.path,
-          size: data.size,
+          size: declaredSize,
           url: data.html_url,
           downloadUrl: data.download_url
         }
@@ -278,7 +356,7 @@ export class GitHubService {
     repo: string
   ): Promise<boolean> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}`;
+    const url = `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}`;
     
     try {
       const response = await this.fetchWithRetryClassification(url, {
@@ -351,7 +429,7 @@ export class GitHubService {
             const ownerName = ownerResponse.login;
             
             const existingRepoResponse = await this.fetchWithRetryClassification(
-              `${this.baseUrl}/repos/${ownerName}/${this.encodePathSegments(name)}`,
+              `${this.baseUrl}/repos/${this.encodePathSegments(ownerName)}/${this.encodePathSegments(name)}`,
               {
                 method: 'GET',
                 headers
@@ -408,26 +486,22 @@ export class GitHubService {
     headers.append('Cache-Control', 'no-cache');
     headers.append('Pragma', 'no-cache');
     
-    // 添加时间戳参数到URL，避免缓存（仅编码路径段，query 部分保持原样）
-    const timestamp = new Date().getTime();
-    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}?timestamp=${timestamp}`;
-    
     try {
-      const response = await this.fetchWithRetryClassification(url, {
-        method: 'GET',
-        headers
-      }, '获取仓库文件列表');
-      
-      if (!response.ok) {
-        await this.throwForErrorResponse(response, '获取仓库文件列表');
+      const files: Array<{name: string; path: string; sha: string; size: number; url: string; download_url: string; type: string}> = [];
+      const timestamp = Date.now();
+      for (let page = 1; page <= 100; page += 1) {
+        const url = `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}?per_page=100&page=${page}&timestamp=${timestamp}`;
+        const response = await this.fetchWithRetryClassification(url, {
+          method: 'GET',
+          headers
+        }, '获取仓库文件列表');
+        if (!response.ok) await this.throwForErrorResponse(response, '获取仓库文件列表');
+        const data = await response.json();
+        if (!Array.isArray(data) || data.length === 0) break;
+        files.push(...data);
+        if (data.length < 100) break;
       }
-      
-      const data = await response.json();
-      
-      // 过滤只返回文件（不包括目录）
-      return Array.isArray(data) 
-        ? data.filter(item => item.type === 'file') 
-        : [];
+      return files.filter(item => item.type === 'file');
     } catch (error) {
       console.error('Getting repository files failed:', error);
       throw error;
@@ -453,7 +527,7 @@ export class GitHubService {
     sha: string
   ): Promise<any> {
     const headers = this.getAuthHeaders(credentials);
-    const url = `${this.baseUrl}/repos/${owner}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`;
+    const url = `${this.baseUrl}/repos/${this.encodePathSegments(owner)}/${this.encodePathSegments(repo)}/contents/${this.encodePathSegments(path)}`;
     
     const body = {
       message,

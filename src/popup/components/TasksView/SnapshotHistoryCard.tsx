@@ -24,6 +24,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import CameraAltIcon from '@mui/icons-material/CameraAlt';
 import RestoreIcon from '@mui/icons-material/Restore';
 import type { RestorePlan, SnapshotIndexEntry, SnapshotSource } from '../../../types/snapshot';
+import type { SnapshotStorageSummary } from '../../../services/bookmark-snapshot-service';
 
 interface SnapshotHistoryCardProps {
   compact?: boolean;
@@ -49,6 +50,7 @@ const downloadJson = (name: string, json: string): void => {
 
 const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = false, onMessage }) => {
   const [entries, setEntries] = useState<SnapshotIndexEntry[]>([]);
+  const [storageSummary, setStorageSummary] = useState<SnapshotStorageSummary | null>(null);
   const [query, setQuery] = useState('');
   const [sourceFilter, setSourceFilter] = useState<SnapshotSource | 'all'>('all');
   const [loading, setLoading] = useState(false);
@@ -68,10 +70,29 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
       const response = await send<{ entries?: SnapshotIndexEntry[] }>('GET_SNAPSHOT_INDEX', { query, source: sourceFilter === 'all' ? undefined : sourceFilter });
       if (!response.success) throw new Error(response.error || '获取快照列表失败');
       setEntries(response.entries || []);
+      const capacity = await send<{ summary?: SnapshotStorageSummary }>('GET_SNAPSHOT_STORAGE');
+      if (capacity.success && capacity.summary) setStorageSummary(capacity.summary);
     } catch (error) {
       notify(error instanceof Error ? error.message : '获取快照列表失败', 'error');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const deleteSnapshot = async (entry: SnapshotIndexEntry) => {
+    const confirmed = typeof window !== 'undefined' && window.confirm(
+      entry.isProtected
+        ? `快照“${entry.name}”受保护。确定要永久删除它吗？建议先导出。`
+        : `确定要删除快照“${entry.name}”吗？`,
+    );
+    if (!confirmed) return;
+    try {
+      const response = await send('DELETE_SNAPSHOT', { snapshotId: entry.snapshotId, confirmProtected: entry.isProtected });
+      if (!response.success) throw new Error(response.error || '删除快照失败');
+      notify('快照已删除', 'success');
+      await load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : '删除快照失败', 'error');
     }
   };
 
@@ -174,6 +195,9 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
             </FormControl>
           </Box>}
           {loading && <CircularProgress size={18} />}
+          {storageSummary?.warning && <Alert severity={storageSummary.rejected ? 'error' : 'warning'}>
+            快照占用约 {(storageSummary.byteSize / 1024 / 1024).toFixed(1)} MB；{storageSummary.rejected ? '已达到安全上限，请先导出或删除快照。' : '接近容量提示线，建议导出不常用的快照。'} 受保护快照不会被自动清理。
+          </Alert>}
           {!loading && visibleEntries.length === 0 && <Typography variant="caption" color="text.secondary">还没有本地快照。AI 分类确认前会自动创建可验证快照。</Typography>}
           {visibleEntries.map(entry => (
             <Box key={entry.snapshotId} sx={{ p: 1, border: '1px solid', borderColor: 'divider', borderRadius: 1 }}>
@@ -187,6 +211,7 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
               <Box sx={{ display: 'flex', gap: 0.5, mt: 0.5 }}>
                 <Button size="small" startIcon={<RestoreIcon />} onClick={() => void previewRestore(entry)}>预览恢复</Button>
                 <Button size="small" startIcon={<FileDownloadIcon />} onClick={() => void exportSnapshot(entry)}>导出</Button>
+                <Button size="small" color="error" onClick={() => void deleteSnapshot(entry)}>删除</Button>
               </Box>
             </Box>
           ))}

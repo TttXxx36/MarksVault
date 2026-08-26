@@ -2,6 +2,12 @@
   "name": "marksvault",
   "version": "2.1.0",
   "description": "智能管理、整理和安全备份您的书签数据",
+  "author": "TttXxx36",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TttXxx36/MarksVault.git"
+  },
+  "homepage": "https://github.com/TttXxx36/MarksVault",
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
@@ -24,7 +30,6 @@
     "lint:firefox": "npx --yes web-ext@8 lint --source-dir .output/firefox-mv2",
     "test": "jest"
   },
-  "author": "",
   "license": "AGPL-3.0",
   "dependencies": {
     "@emotion/react": "^11.11.0",

@@ -18,7 +18,9 @@ import {
 } from '../services/ai-classification-service';
 import {
   createBookmarkSnapshot,
+  deleteBookmarkSnapshot,
   exportBookmarkSnapshot,
+  getSnapshotStorageSummary,
   importBookmarkSnapshot,
   listBookmarkSnapshots,
 } from '../services/bookmark-snapshot-service';
@@ -264,6 +266,13 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === 'GET_SNAPSHOT_STORAGE') {
+        void getSnapshotStorageSummary()
+          .then(summary => sendResponse({ success: true, summary }))
+          .catch(respondError);
+        return true;
+      }
+
       if (message.type === 'CREATE_MANUAL_SNAPSHOT') {
         void createBookmarkSnapshot({
           source: 'manual',
@@ -289,6 +298,15 @@ export default defineBackground({
           name: typeof message?.payload?.name === 'string' ? message.payload.name : undefined,
         })
           .then(snapshot => sendResponse({ success: true, snapshot }))
+          .catch(respondError);
+        return true;
+      }
+
+      if (message.type === 'DELETE_SNAPSHOT') {
+        void deleteBookmarkSnapshot(String(message?.payload?.snapshotId || ''), {
+          allowProtected: message?.payload?.confirmProtected === true,
+        })
+          .then(() => sendResponse({ success: true }))
           .catch(respondError);
         return true;
       }
