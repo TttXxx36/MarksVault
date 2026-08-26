@@ -3,7 +3,7 @@
 > 文档状态：Approved for implementation planning  
 > 目标仓库：`TttXxx36/MarksVault`  
 > 审计基线：`main@4ae3d7c24f50574d36e86609338b36f18ac2695d`  
-> 初始规划版本：`1.5.0`；当前实现版本：`2.1.0`  
+> 初始规划版本：`1.5.0`；当前实现版本：`2.1.1`
 > 编写日期：2026-08-25；最近审计：2026-08-26  
 > 主要执行代理：GPT-5.6 Luna（后续实现时）
 
@@ -109,18 +109,19 @@
 
 ### 3.4 发布差距
 
-截至 2026-08-26，v1.6.0、v2.0.0、v2.0.1 和 v2.1.0 均已有独立标签、Release 和生产资产；三端构建、Manifest 检查和 Firefox lint 已纳入质量门槛。`docs/BASELINE.md` 记录了可复现命令和结果，README 大图已移出安装包。
+截至 2026-08-26，v1.6.0、v2.0.0、v2.0.1、v2.1.0 均已有独立标签、Release 和生产资产；本轮 v2.1.1 作为维护版本继续保留这些公开版本。三端构建、Manifest 检查和 Firefox lint 已纳入质量门槛。`docs/BASELINE.md` 记录了可复现命令和结果，README 大图已移出安装包。
 
-本次审计仍发现以下尚未完全收敛的计划项，不能标记为“全部完成”：
+本轮已收敛的审计差距：
 
-- 旧 GitHub 恢复路径仍未完全迁移到语义根目录、统一 RestorePlan 和逐项 journal；
-- 旧版 GitHub 备份 schema 仍未全面迁移到 §7.2 的语义根目录 v2 格式，当前快照域模型已先覆盖本地历史恢复；
-- `src/utils/bookmark-service.ts` 和本地快照模型现在保留 separator/unmodifiable，但跨浏览器根目录恢复、未知根目录保底导入文件夹仍需完整集成测试；
-- GitHub 客户端已补齐 API 版本头、Bearer、超时/AbortSignal、大文件 raw 读取、目录分页和一次性冲突重读；`Retry-After`/限流元数据结构化暴露和统一错误模型仍待架构切片；
-- `organize-service.ts` 的在线检查已移除 no-cors 回退，改为精确 origin 权限请求并拒绝 opaque/status=0 结果；全库在线检查的权限拒绝 UI 仍需端到端验证；
-- Firefox 已声明 MV2 `optional_permissions`、稳定 ID 和数据收集字段，但 AMO 实际提交前仍需用发布者账号做一次人工审核；
-- 快照列表已增加容量提示和显式删除入口，但旧版恢复入口尚未统一到同一历史恢复 UI；
-- Phase 4 的 core/adapters/storage 目录收敛、统一运行时 schema 和日志服务仍是后续架构切片。
+- GitHub 书签恢复统一为“下载校验 → 本地导入快照 → RestorePlan 差异预览 → 用户确认 → 租约/journal 写入”，旧 v1 文件只读迁移，不再保留直接清空重建路径；
+- 新 GitHub 备份只写语义根目录 schema v2，旧 v1 自动迁移并给出警告；Chrome、Edge、Firefox 根目录/分隔线/受保护节点夹具均有测试；
+- 未知根目录使用带时间戳的 `MarksVault Imported - ...` 保底文件夹，journal 保存映射并支持幂等恢复；冲突、重复 URL、URL 变更和用户后续修改默认跳过；
+- GitHub Retry-After、X-RateLimit-Remaining、X-RateLimit-Reset 已结构化暴露，并区分认证、权限、冲突、校验、限流和服务端错误；
+- 在线检查权限拒绝返回稳定 `permission_denied` 错误码，任务结果和 UI 提示不再依赖中文错误文本；
+- 本地快照历史与 GitHub 导入统一使用同一列表、筛选、差异和选择性恢复界面；恢复预览允许取消安全项目，冲突项目不可勾选；
+- 运行时消息边界和最小脱敏结构化日志已落地，完整 Phase 4 core/adapters/storage 重构仍单独排期；
+
+仍需单独处理的事项：Firefox AMO 实际提交前的发布者账号人工审核；完整 Phase 4 架构重构；真实浏览器手工烟测（本轮自动化测试不接触真实书签、Token 或 GitHub 数据）。
 
 ## 4. 不可违反的安全约束
 
@@ -1750,6 +1751,7 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 10. `feat(bookmarks): add snapshot diff and conflict-safe restore`
 11. `test(bookmarks): add snapshot failure-injection matrix`
 12. `release: prepare v2.1.0`
+13. `release: prepare v2.1.1`（GitHub schema v2 迁移、统一恢复、错误元数据和安全诊断，详见 §18.6）
 
 任何切片都不得同时修改 GitHub 备份核心、Firefox manifest 和 AI 恢复核心，除非任务依赖明确记录在提交说明中。
 
@@ -1765,5 +1767,36 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 - AI 分类执行前一定存在可验证的书签快照；快照失败时不允许移动书签。
 - 历史恢复默认展示差异并跳过冲突，不会静默覆盖用户后续修改。
 - Chrome、Firefox、Edge 的构建、单元测试、契约测试和 Firefox lint 均通过。
+
+### 18.6 v2.1.1 维护增量：GitHub 统一恢复与安全收敛
+
+本节记录 2026-08-26 Grill with Docs 后冻结的 v2.1.1 范围。v2.1.0 的公开标签和 Release 不修改；v2.1.1 只增加兼容迁移、安全恢复和可诊断性改进。
+
+#### 18.6.1 GitHub 备份/恢复契约
+
+- 书签备份只写 schema v2：语义根目录、节点类型、原始标题、来源和统计信息必须通过运行时 schema 校验；禁止把 API Key、GitHub Token、AI 配置或运行时状态写入备份。
+- 读取 `version: '1.0'` 时迁移到 v2，保留 warning；v1 不执行写操作，不覆盖旧文件。
+- GitHub 恢复必须先生成本地 `imported` 快照和 RestorePlan，再进入统一历史列表；自动任务只能生成预览，不得直接修改书签。
+- 已知根目录按语义角色映射；未知根目录导入 `MarksVault Imported - YYYY-MM-DD HH-mm-ss` 文件夹。映射和新建文件夹 ID 写入 journal，重复执行复用同一映射。
+- separator/managed/unmodifiable 节点不做跨浏览器写入；重复 URL、ID 变化、路径指纹不唯一和 URL 已变更时进入 conflict/skip，不选择第一个猜测匹配。
+
+#### 18.6.2 选择性恢复、故障安全和权限提示
+
+- 预览允许用户取消安全的 restore 项目；conflict、skip、added 项目不可勾选。恢复不删除快照后新增节点、不删除非空文件夹、不修改 URL。
+- 恢复前创建并校验 `恢复前` 快照；快照、journal 或租约失败时禁止书签写入。部分失败标记 `uncertain`，不自动重试写操作；用户只能明确选择继续或回滚。
+- 回滚仅处理本次 journal 实际修改、且当前状态仍等于写入后状态的节点；用户之后修改过的节点保持不变。
+- 在线 URL 检查权限被拒绝时返回 `permission_denied`，任务历史和 UI 使用错误码映射提示，不根据中文错误文本判断类别。
+
+#### 18.6.3 GitHub 错误和运行时诊断
+
+- GitHub 429/403 rate limit/5xx 使用可重试错误和有限等待；401/权限/校验/资源冲突不自动重试。`Retry-After` 最大等待提示 60 秒，并记录剩余配额和重置时间。
+- Runtime message 必须是有界的 `{ type, payload? }` 对象；拒绝 malformed message。结构化日志只记录事件和安全元数据，敏感 key、Token、URL、标题、路径、正文均脱敏。
+
+#### 18.6.4 v2.1.1 交付门槛
+
+- v2.0.1/v2.1.0 原有测试全部通过；新增 schema、迁移、未知根目录、选择性恢复、journal、限流、权限和脱敏测试。
+- 只使用合成书签、模拟浏览器 bookmarks API、模拟 IndexedDB、模拟 GitHub/API 响应和假 Token；不上传 GitHub、不覆盖真实书签、不创建真实 Release 外的远程数据。
+- 必须通过 Jest、TypeScript、ESLint、Chrome/Firefox/Edge 构建、Manifest 校验、Firefox `web-ext lint` 和 SHA256 校验。
+- v2.1.1 Release 上传 Chrome、Firefox、Edge、源码压缩包、SHA256 校验文件和发布说明；v2.0.1、v2.1.0 标签与 Release 保持不变。
 
 

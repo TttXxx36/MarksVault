@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.1.1
+
+- 将 GitHub 书签恢复统一为 v2 备份校验、旧 v1 迁移、本地导入快照、差异预览和 RestorePlan/Journal 流程；移除旧的直接清空重建路径。
+- 增加跨浏览器语义根目录映射、未知根目录幂等导入文件夹、separator/unmodifiable 安全跳过和选择性恢复勾选。
+- GitHub 限流响应提供 Retry-After/配额重置元数据；在线检查权限拒绝返回稳定错误码并显示可行动提示。
+- 增加运行时消息 schema 边界和脱敏结构化日志，补齐 schema、迁移、故障注入、权限和恢复安全测试。
+- 保留 v2.0.1、v2.1.0 标签与 Release；Chrome、Firefox、Edge 和源码生产包随本版本发布。
+
 ## v2.1.0
 
 - 新增本地 IndexedDB 书签快照、命名/自动快照保留、导入导出和容量校验。

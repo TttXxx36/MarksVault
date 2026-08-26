@@ -20,10 +20,9 @@ import WarningIcon from '@mui/icons-material/Warning';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
 
 import BackupSelectionDialog from '../../popup/components/SyncView/BackupSelectionDialog';
-import { Task, BackupAction, ActionType } from '../../types/task';
+import { Task, BackupAction } from '../../types/task';
 import storageService, { GitHubCredentials } from '../../utils/storage-service';
 import githubService from '../../services/github-service';
-import taskExecutor from '../../services/task-executor';
 import { browser } from 'wxt/browser';
 
 // 备份仓库名称常量
@@ -101,25 +100,14 @@ const BackupRestoreExecutor: React.FC<BackupRestoreExecutorProps> = ({ task, onC
     setError(null);
 
     try {
-      const taskToExecute: Task = {
-        ...task,
-        action: {
-          ...(task.action as BackupAction),
-          type: ActionType.BACKUP,
-          operation: 'restore',
-          options: {
-            ...(action.options || {}),
-            ...(restoreMode === 'select' ? { backupFilePath: selectedBackupPath } : {}),
-          },
-        } as BackupAction,
-      };
-
-      // 如果选择“最新备份”，显式移除 backupFilePath（避免旧配置残留）
-      if (restoreMode === 'latest') {
-        delete (taskToExecute.action as BackupAction).options.backupFilePath;
-      }
-
-      const result = await taskExecutor.executeTaskWithData(taskToExecute);
+      // 书签恢复只能准备导入快照和差异预览；后台不会在任务执行器中直接覆盖书签树。
+      const result = await browser.runtime.sendMessage({
+        type: 'PREPARE_GITHUB_BOOKMARK_RESTORE',
+        payload: {
+          useTimestampedFile: restoreMode === 'select',
+          timestampedFilePath: restoreMode === 'select' ? selectedBackupPath : undefined,
+        },
+      }) as { success?: boolean; data?: { planId?: string; snapshotId?: string; warnings?: string[] }; error?: string };
       if (!result.success) {
         throw new Error(result.error || '恢复失败');
       }
@@ -133,7 +121,7 @@ const BackupRestoreExecutor: React.FC<BackupRestoreExecutorProps> = ({ task, onC
             taskId: task.id,
             success: true,
             timestamp: Date.now(),
-            message: '恢复完成',
+            message: '已生成 GitHub 恢复预览，请在任务页确认',
           },
         });
       } catch (error) {
@@ -208,14 +196,14 @@ const BackupRestoreExecutor: React.FC<BackupRestoreExecutorProps> = ({ task, onC
 
         {!loading && success && (
           <Alert severity="success" sx={{ mb: 2 }}>
-            恢复成功，页面即将关闭...
+            已生成恢复预览。请打开“任务”页，在快照历史中查看差异并确认写入。
           </Alert>
         )}
 
         {!loading && !success && (
           <>
             <Alert severity="warning" icon={<WarningIcon />} sx={{ mb: 2 }}>
-              此操作会覆盖当前浏览器中的书签，且不可撤销。建议先执行一次“立即备份”。
+              此操作只会下载并校验 GitHub 备份，生成本地导入快照和差异预览，不会立即修改书签。
             </Alert>
 
             <Typography variant="subtitle1" sx={{ fontWeight: 600, mb: 1 }}>
@@ -302,7 +290,7 @@ const BackupRestoreExecutor: React.FC<BackupRestoreExecutorProps> = ({ task, onC
           </DialogTitle>
           <DialogContent>
             <DialogContentText>
-              此操作将从 GitHub 恢复书签，并覆盖当前浏览器中的书签。此操作不可撤销。
+              此操作将下载并校验 GitHub 备份，生成本地导入快照。之后必须在任务页查看差异并再次确认，才会写入书签。
               <br />
               <br />
               {restoreMode === 'select' && selectedBackupPath ? (

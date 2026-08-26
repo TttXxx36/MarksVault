@@ -1440,6 +1440,18 @@ export class TaskExecutor {
           timestampedFilePath
         );
 
+        // 书签 GitHub 恢复现在只准备本地导入快照和差异预览。自动任务不得
+        // 绕过用户确认写入书签，因而把结果标记为需要人工确认而不是“恢复成功”。
+        if (restoreResult.success && restoreResult.data?.planId) {
+          return {
+            success: false,
+            timestamp: Date.now(),
+            retryable: false,
+            error: '已生成 GitHub 恢复预览，请在任务页的快照历史中查看差异并确认写入',
+            details: `恢复计划 ${restoreResult.data.planId} 已保存；自动任务不会直接修改书签树`,
+          };
+        }
+
         if (!restoreResult.success) {
           console.error(`从GitHub恢复失败:`, restoreResult.error);
           return {
@@ -1506,6 +1518,7 @@ export class TaskExecutor {
       let failureCount = 0;
       let processedBookmarksCount = 0;
       let details: string[] = [];
+      const errorCodes = new Set<string>();
 
       results.forEach(result => {
         if (result.success) {
@@ -1515,6 +1528,7 @@ export class TaskExecutor {
         }
         processedBookmarksCount += result.processedCount;
         details.push(result.details);
+        if (result.errorCode) errorCodes.add(result.errorCode);
       });
 
       // 生成总结果
@@ -1523,7 +1537,8 @@ export class TaskExecutor {
         success: allOperationsSucceeded,
         timestamp: Date.now(),
         details: `执行了 ${organizeAction.operations.length} 个整理操作，成功 ${successCount} 个，失败 ${failureCount} 个，处理了 ${processedBookmarksCount} 个书签。详情: ${details.join(' | ')}`,
-        error: allOperationsSucceeded ? undefined : `${failureCount} 个操作失败，请检查详情`
+        error: allOperationsSucceeded ? undefined : `${failureCount} 个操作失败，请检查详情`,
+        errorCode: errorCodes.size === 1 ? [...errorCodes][0] : errorCodes.size > 1 ? 'operation' : undefined,
       };
     } catch (error) {
       return {

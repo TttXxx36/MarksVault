@@ -33,6 +33,11 @@ import {
   resumeRestoreJournal,
   rollbackRestorePlan,
 } from '../services/bookmark-restore-service';
+import { prepareGitHubBookmarkRestore } from '../services/github-bookmark-restore-service';
+import githubService from '../services/github-service';
+import storageService from '../utils/storage-service';
+import { isRuntimeMessage } from '../utils/runtime-message';
+import { logStructuredEvent } from '../utils/redacted-log';
 import { ActionType, createDefaultTaskStorage, EventType } from '../types/task';
 
 /**
@@ -207,7 +212,11 @@ export default defineBackground({
 
     // 监听来自页面的消息（Chrome 需要 sendResponse + return true 才能异步响应）
     browser.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-      if (!message?.type) return;
+      if (!isRuntimeMessage(message)) {
+        logStructuredEvent('runtime_message_rejected', { reason: 'invalid_schema' });
+        sendResponse({ success: false, error: '无效的运行时消息' });
+        return true;
+      }
 
       const respondError = (error: unknown) => {
         sendResponse({
@@ -311,6 +320,25 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === 'PREPARE_GITHUB_BOOKMARK_RESTORE') {
+        void (async () => {
+          const credentialsResult = await storageService.getGitHubCredentials();
+          if (!credentialsResult.success || !credentialsResult.data) {
+            return { success: false, error: '未找到 GitHub 凭据，请先完成授权' };
+          }
+          const user = await githubService.validateCredentials(credentialsResult.data);
+          return prepareGitHubBookmarkRestore(credentialsResult.data, user.login, {
+            useTimestampedFile: message?.payload?.useTimestampedFile === true,
+            timestampedFilePath: typeof message?.payload?.timestampedFilePath === 'string'
+              ? message.payload.timestampedFilePath : undefined,
+            userName: user.login,
+          });
+        })()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
       if (message.type === 'CREATE_RESTORE_PLAN') {
         void createRestorePlan(String(message?.payload?.snapshotId || ''), {
           userName: typeof message?.payload?.userName === 'string' ? message.payload.userName : undefined,
@@ -332,6 +360,9 @@ export default defineBackground({
       if (message.type === 'APPLY_RESTORE_PLAN') {
         void applyRestorePlan(String(message?.payload?.planId || ''), {
           continueAfterUncertain: message?.payload?.continueAfterUncertain === true,
+          selectedItemIds: Array.isArray(message?.payload?.selectedItemIds)
+            ? message.payload.selectedItemIds.filter((itemId: unknown): itemId is string => typeof itemId === 'string')
+            : undefined,
         })
           .then(plan => sendResponse({ success: true, plan }))
           .catch(respondError);
@@ -452,7 +483,7 @@ export default defineBackground({
           // 用户从 UI 明确发起，执行来源为 manual
           const result = await taskExecutor.executeTask(taskId, 0, 'manual');
 
-          return { success: result.success, error: result.error };
+          return { success: result.success, error: result.error, errorCode: result.errorCode };
         })()
           .then((response) => sendResponse(response))
           .catch(respondError);

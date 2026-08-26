@@ -6,7 +6,7 @@
 
 - 仓库：`TttXxx36/MarksVault`
 - 审计日期：2026-08-26
-- 当前发布线：`v2.1.0`
+- 当前发布线：`v2.1.1`
 - Node.js：`v24.19.0`（本地 Codex 运行时）
 - WXT：`0.20.27`
 - Chrome/Edge：Manifest V3
@@ -33,16 +33,16 @@ npm run lint:firefox
 | 检查 | 结果 |
 | --- | --- |
 | TypeScript 类型检查 | 通过 |
-| Jest | 18 个套件 / 157 个测试通过 |
-| ESLint | 0 错误；23 条既有警告 |
+| Jest | 20 个套件 / 165 个测试通过 |
+| ESLint | 0 错误；27 条非阻断警告 |
 | Chrome / Firefox / Edge 构建 | 通过 |
 | Manifest 合同检查 | 通过 |
 | Firefox `web-ext lint` | 0 errors / 0 notices；2 条第三方构建产物警告 |
 | 20,000 节点快照性能/容量基线 | 通过 |
 
-本轮构建产物（2026-08-26）：Chrome `419,213` bytes，Firefox `445,384` bytes，Edge `419,213` bytes，源码包 `8,013,229` bytes。三端 Manifest 均通过合同检查；Chrome/Edge/Firefox 均声明 3 个运行时可选 origin，Firefox 使用 MV2 `optional_permissions`。
+本轮 v2.1.1 构建产物（2026-08-26）已复制到发布目录；具体大小和 SHA256 以同目录的校验文件为准。三端 Manifest 均通过合同检查；Chrome/Edge/Firefox 均声明 3 个运行时可选 origin，Firefox 使用 MV2 `optional_permissions`。
 
-对应 SHA256 已写入 `marksvault-2.1.0-SHA256SUMS.txt`；校验结果为四个生产文件全部匹配。
+对应 SHA256 已写入 `marksvault-2.1.1-SHA256SUMS.txt`；发布目录中的校验文件是四个生产文件的权威摘要，生成后已逐一验证匹配。
 
 ## 约束
 

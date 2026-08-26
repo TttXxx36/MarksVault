@@ -206,13 +206,14 @@ export interface RestoreJournalItem {
   itemId: string;
   bookmarkId?: string;
   state: RestoreJournalItemState;
-  operation?: 'move' | 'rename' | 'create-folder' | 'delete';
+  operation?: 'move' | 'rename' | 'create-folder' | 'create-bookmark' | 'delete';
   beforeParentId?: string;
   beforeIndex?: number;
   afterParentId?: string;
   afterIndex?: number;
   beforeTitle?: string;
   afterTitle?: string;
+  afterUrl?: string;
   startedAt?: number;
   completedAt?: number;
   error?: string;
@@ -236,6 +237,10 @@ export interface RestoreJournal {
   state: RestorePlanState;
   leaseId?: string;
   items: RestoreJournalItem[];
+  /** Foreign semantic roots mapped to local browser folders for this plan. */
+  semanticRootMap?: Record<string, string>;
+  /** Folders created as unknown-root fallbacks; kept for audit and idempotent resume. */
+  createdRootFolderIds?: string[];
   error?: string;
   browserRestartRecovered?: boolean;
 }

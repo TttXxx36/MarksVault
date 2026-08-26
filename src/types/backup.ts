@@ -1,9 +1,10 @@
 import { BookmarkItem } from '../utils/bookmark-service';
+import type { BookmarkRootRole } from './snapshot';
 
 /**
  * 书签备份数据结构
  */
-export interface BookmarkBackup {
+export interface BookmarkBackupV1 {
   /** 备份版本号 */
   version: string;
   /** 备份创建时间戳 */
@@ -22,6 +23,50 @@ export interface BookmarkBackup {
     [key: string]: any;
   };
 }
+
+export interface BookmarkNodeV2 {
+  id: string;
+  parentId?: string;
+  title: string;
+  type: 'bookmark' | 'folder' | 'separator';
+  url?: string;
+  children?: BookmarkNodeV2[];
+  dateAdded?: number;
+  index?: number;
+  path: string;
+  unmodifiable?: string;
+}
+
+export interface BookmarkBackupV2 {
+  schemaVersion: 2;
+  app: 'MarksVault';
+  createdAt: string;
+  source: {
+    extensionVersion: string;
+    browser: string;
+    manifestVersion: 2 | 3;
+    platform?: string;
+  };
+  roots: Array<{
+    role: BookmarkRootRole;
+    originalTitle: string;
+    nativeId?: string;
+    children: BookmarkNodeV2[];
+  }>;
+  stats: {
+    bookmarks: number;
+    folders: number;
+    separators: number;
+    maxDepth: number;
+    nodeCount?: number;
+    byteSize?: number;
+    contentHash?: string;
+  };
+  /** Transitional metadata used by old status/reporting callers. */
+  timestamp?: number;
+}
+
+export type BookmarkBackup = BookmarkBackupV1 | BookmarkBackupV2;
 
 /**
  * 备份操作结果
@@ -70,4 +115,4 @@ export interface BackupStatus {
     /** 是否来自缓存数据 */
     isFromCache?: boolean;
   };
-} 
+}

@@ -72,11 +72,14 @@ const App: React.FC = () => {
       if (!isRecent(timestamp)) return;
 
       const success = value['success'] === true;
+      const errorCode = typeof value['errorCode'] === 'string' ? value['errorCode'] : undefined;
       const message = typeof value['message'] === 'string'
         ? value['message']
         : success
           ? '任务执行成功'
-          : '任务执行失败';
+          : errorCode === 'permission_denied'
+            ? '在线检查权限未授予，请允许目标网站权限后重试'
+            : '任务执行失败';
 
       toastRef.current?.showToast(message, success ? 'success' : 'error');
     };

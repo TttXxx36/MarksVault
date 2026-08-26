@@ -3,12 +3,14 @@ import { GitHubCredentials, GitHubUser } from '../types/github';
 export class GitHubApiError extends Error {
   public readonly status: number;
   public readonly data?: unknown;
+  public readonly category: 'auth' | 'permission' | 'conflict' | 'validation' | 'not_found' | 'api';
 
-  constructor(status: number, message: string, data?: unknown) {
+  constructor(status: number, message: string, data?: unknown, category: GitHubApiError['category'] = 'api') {
     super(message);
     this.name = 'GitHubApiError';
     this.status = status;
     this.data = data;
+    this.category = category;
   }
 }
 
@@ -22,19 +24,33 @@ export enum RetryableErrorCategory {
   SERVER = 'server',         // 服务端错误（HTTP 5xx）
 }
 
+export interface GitHubRateLimitMetadata {
+  status?: number;
+  retryAfterSeconds?: number;
+  remaining?: number;
+  resetAt?: number;
+}
+
 /**
  * 可重试错误
  * 明确标记为临时性失败：可在执行租约有效期内重试
  */
 export class RetryableError extends Error {
   public readonly category: RetryableErrorCategory;
+  public readonly metadata?: GitHubRateLimitMetadata;
 
-  constructor(category: RetryableErrorCategory, message: string) {
+  constructor(category: RetryableErrorCategory, message: string, metadata?: GitHubRateLimitMetadata) {
     super(message);
     this.name = 'RetryableError';
     this.category = category;
+    this.metadata = metadata;
   }
 }
+
+export const getGitHubErrorMetadata = (error: unknown): GitHubRateLimitMetadata | undefined => {
+  if (error instanceof RetryableError) return error.metadata;
+  return error instanceof GitHubApiError ? { status: error.status } : undefined;
+};
 
 /**
  * 结构化判定错误是否为可重试的临时性失败（网络、限流、服务端错误）
@@ -183,11 +199,32 @@ export class GitHubService {
         // 响应体可能不是 JSON，忽略
       }
     }
+    const getHeader = (name: string): string | null => {
+      const headers = response.headers as Headers | undefined;
+      return headers && typeof headers.get === 'function' ? headers.get(name) : null;
+    };
+    const retryAfterHeader = getHeader('retry-after');
+    let retryAfterSeconds: number | undefined;
+    if (retryAfterHeader) {
+      const numeric = Number(retryAfterHeader);
+      retryAfterSeconds = Number.isFinite(numeric)
+        ? Math.max(0, Math.min(60, numeric))
+        : Math.max(0, Math.min(60, (Date.parse(retryAfterHeader) - Date.now()) / 1000));
+    }
+    const remainingHeader = getHeader('x-ratelimit-remaining');
+    const resetHeader = getHeader('x-ratelimit-reset');
+    const metadata: GitHubRateLimitMetadata = {
+      status: response.status,
+      ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+      ...(remainingHeader && Number.isFinite(Number(remainingHeader)) ? { remaining: Number(remainingHeader) } : {}),
+      ...(resetHeader && Number.isFinite(Number(resetHeader)) ? { resetAt: Number(resetHeader) * 1000 } : {}),
+    };
     const message = `${context}失败: ${response.status}${errorData !== undefined ? ` - ${JSON.stringify(errorData)}` : ''}`;
     if (response.status === 429 || response.status >= 500) {
       throw new RetryableError(
         response.status === 429 ? RetryableErrorCategory.RATE_LIMIT : RetryableErrorCategory.SERVER,
-        message
+        message,
+        metadata
       );
     }
     // GitHub primary rate limit 返回 403 且响应体 message 含 "API rate limit exceeded"，
@@ -196,9 +233,14 @@ export class GitHubService {
     if (response.status === 403 &&
         typeof errorMessage === 'string' &&
         errorMessage.toLowerCase().includes('rate limit')) {
-      throw new RetryableError(RetryableErrorCategory.RATE_LIMIT, message);
+      throw new RetryableError(RetryableErrorCategory.RATE_LIMIT, message, metadata);
     }
-    throw new GitHubApiError(response.status, message, errorData);
+    const category = response.status === 401 ? 'auth'
+      : response.status === 403 ? 'permission'
+        : response.status === 404 ? 'not_found'
+          : response.status === 409 ? 'conflict'
+            : response.status === 422 ? 'validation' : 'api';
+    throw new GitHubApiError(response.status, message, errorData, category);
   }
 
   /**

@@ -1,4 +1,4 @@
-import githubService, { GitHubApiError } from './github-service';
+import githubService, { GitHubApiError, RetryableError, RetryableErrorCategory, getGitHubErrorMetadata } from './github-service';
 
 describe('github-service.validateCredentials', () => {
   beforeEach(() => {
@@ -33,6 +33,26 @@ describe('github-service.validateCredentials', () => {
       name: 'GitHubApiError',
       status: 401,
       data: { message: 'Bad credentials' },
+    });
+  });
+
+  test('限流错误暴露结构化 Retry-After 与配额元数据，并限制等待上限', async () => {
+    (global as any).fetch.mockResolvedValue({
+      ok: false,
+      status: 429,
+      headers: new Headers({ 'retry-after': '120', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000000' }),
+      json: async () => ({ message: 'rate limited' }),
+    });
+
+    const error = await githubService.validateCredentials({ token: 'fake-token' } as any).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(RetryableError);
+    expect(error).toMatchObject({ category: RetryableErrorCategory.RATE_LIMIT });
+    expect(getGitHubErrorMetadata(error)).toEqual({
+      status: 429,
+      retryAfterSeconds: 60,
+      remaining: 0,
+      resetAt: 1700000000000,
     });
   });
 

@@ -16,6 +16,7 @@ import DialogContentText from '@mui/material/DialogContentText';
 import DialogTitle from '@mui/material/DialogTitle';
 import Divider from '@mui/material/Divider';
 import CircularProgress from '@mui/material/CircularProgress';
+import Checkbox from '@mui/material/Checkbox';
 import Select from '@mui/material/Select';
 import MenuItem from '@mui/material/MenuItem';
 import FormControl from '@mui/material/FormControl';
@@ -47,6 +48,13 @@ const downloadJson = (name: string, json: string): void => {
   link.remove();
   URL.revokeObjectURL(url);
 };
+
+const sourceLabel = (source: SnapshotSource): string => ({
+  'ai-classification-before': 'AI 分类前',
+  manual: '手动',
+  'restore-before': '恢复前',
+  imported: 'GitHub/文件导入',
+}[source] || source);
 
 const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = false, onMessage }) => {
   const [entries, setEntries] = useState<SnapshotIndexEntry[]>([]);
@@ -157,7 +165,10 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
     if (!plan) return;
     setApplying(true);
     try {
-      const response = await send<{ plan?: RestorePlan }>('APPLY_RESTORE_PLAN', { planId: plan.planId });
+      const response = await send<{ plan?: RestorePlan }>('APPLY_RESTORE_PLAN', {
+        planId: plan.planId,
+        selectedItemIds: plan.selectedItemIds,
+      });
       if (!response.success) throw new Error(response.error || '恢复失败');
       setPlan(response.plan || plan);
       notify('恢复已完成；新增节点和冲突节点已保留', 'success');
@@ -204,7 +215,7 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
               <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1 }}>
                 <Box sx={{ minWidth: 0 }}>
                   <Typography variant="body2" noWrap>{entry.name}</Typography>
-                  <Typography variant="caption" color="text.secondary">{new Date(entry.createdAt).toLocaleString()} · {entry.nodeCount} 节点 · {entry.source}</Typography>
+                  <Typography variant="caption" color="text.secondary">{new Date(entry.createdAt).toLocaleString()} · {entry.nodeCount} 节点 · {sourceLabel(entry.source)}</Typography>
                 </Box>
                 <Chip size="small" color={entry.validationStatus === 'valid' ? 'success' : 'warning'} label={entry.isProtected ? '受保护' : '自动'} />
               </Box>
@@ -234,6 +245,33 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
             <DialogContentText>默认跳过快照之后被修改、已删除或无法安全匹配的节点，不删除快照之后新增书签，不修改 URL。确认后会先创建“恢复前”快照。</DialogContentText>
             {plan.state === 'uncertain' && <Alert severity="error" sx={{ mt: 1 }}>上次恢复结果不确定，请先检查恢复日志，再明确选择继续或回滚。</Alert>}
             <Divider sx={{ my: 1 }} />
+            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>本次恢复项目</Typography>
+            <Stack spacing={0.5} sx={{ maxHeight: 260, overflowY: 'auto', mb: 1 }}>
+              {plan.diff.items.filter(item => item.action !== 'none').map(item => {
+                const selectable = item.action === 'restore' && !item.conflict;
+                const checked = plan.selectedItemIds.includes(item.id);
+                const label = item.snapshotNode?.title || item.currentNode?.title || item.id;
+                const status = item.conflict ? '冲突，已跳过' : item.action === 'restore' ? '可恢复' : item.reason || '跳过';
+                return (
+                  <Box key={item.id} sx={{ display: 'flex', alignItems: 'center', gap: 0.5, px: 0.5, borderRadius: 0.5, bgcolor: item.conflict ? 'action.hover' : undefined }}>
+                    <Checkbox
+                      size="small"
+                      checked={checked}
+                      disabled={!selectable || applying}
+                      onChange={event => setPlan(current => current ? {
+                        ...current,
+                        selectedItemIds: event.target.checked
+                          ? [...new Set([...current.selectedItemIds, item.id])]
+                          : current.selectedItemIds.filter(id => id !== item.id),
+                      } : current)}
+                      inputProps={{ 'aria-label': `选择恢复项目 ${label}` }}
+                    />
+                    <Typography variant="body2" noWrap sx={{ minWidth: 0, flex: 1 }}>{label}</Typography>
+                    <Typography variant="caption" color={item.conflict ? 'warning.main' : 'text.secondary'} noWrap>{status}</Typography>
+                  </Box>
+                );
+              })}
+            </Stack>
             <Typography variant="caption" color="text.secondary">恢复计划只会执行标记为“恢复”的项目；预览本身不会写入书签。</Typography>
           </>}
         </DialogContent>

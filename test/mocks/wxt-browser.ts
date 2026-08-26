@@ -99,6 +99,7 @@ export const browser = {
     create: async () => ({ id: '0', title: '', url: '' }),
     update: async () => ({ id: '0', title: '', url: '' }),
     remove: async () => undefined,
+    removeTree: async () => undefined,
     move: async () => ({ id: '0' }),
   },
 } as any;

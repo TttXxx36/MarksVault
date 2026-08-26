@@ -175,6 +175,8 @@ export interface TaskExecutionResult {
   duration?: number;        // 执行持续时间（毫秒）
   details?: string;         // 执行详情
   error?: string;           // 错误信息（如果失败）
+  /** Stable category for UI remediation; never infer this from localized text. */
+  errorCode?: string;
   source?: ExecutionSource; // 执行来源（本次执行由用户明确发起还是事件自动触发）
 }
 

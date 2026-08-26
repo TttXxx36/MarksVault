@@ -1,5 +1,6 @@
 import organizeService from './organize-service';
 import bookmarkService, { BookmarkItem } from '../utils/bookmark-service';
+import { browser } from 'wxt/browser';
 
 jest.mock('../utils/bookmark-service', () => ({
   __esModule: true,
@@ -34,6 +35,7 @@ describe('organize-service 失败处理', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete (browser as any).permissions;
     (globalThis as any).fetch = mockedFetch;
     mockedBookmarkService.getAllBookmarks.mockResolvedValue({
       success: true,
@@ -169,5 +171,22 @@ describe('organize-service 失败处理', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('验证失败');
     expect(result.details).toContain('跨域策略');
+  });
+
+  test('在线检查权限被拒绝时返回稳定的 permission_denied 错误码', async () => {
+    const permissionDeniedTree = JSON.parse(JSON.stringify(bookmarkTree)) as BookmarkItem[];
+    permissionDeniedTree[0].children![0].url = 'https://permission-denied.example/bookmark';
+    mockedBookmarkService.getAllBookmarks.mockResolvedValue({ success: true, data: permissionDeniedTree } as any);
+    (browser as any).permissions = {
+      contains: jest.fn().mockResolvedValue(false),
+      request: jest.fn().mockResolvedValue(false),
+    };
+
+    const [result] = await organizeService.organizeBookmarks([{ operation: 'validate', filters: { pattern: 'permission-denied.example' } }]);
+
+    expect(result.success).toBe(false);
+    expect(result.errorCode).toBe('permission_denied');
+    expect((browser as any).permissions.request).toHaveBeenCalledWith({ origins: ['https://permission-denied.example/*'] });
+    expect(mockedFetch).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,8 @@ export interface OrganizeResult {
   processedCount: number;       // 处理的书签数量
   details: string;              // 操作详情
   error?: string;               // 错误信息
+  /** Stable machine-readable category for permission-aware UI and telemetry. */
+  errorCode?: 'permission_denied' | 'invalid_url' | 'network' | 'http' | 'unsupported_protocol' | 'operation';
 }
 
 /**
@@ -117,20 +119,20 @@ class OrganizeService {
     }
   }
 
-  private async validateBookmarkUrl(url: string): Promise<{ valid: boolean; reason?: string }> {
+  private async validateBookmarkUrl(url: string): Promise<{ valid: boolean; reason?: string; errorCode?: OrganizeResult['errorCode'] }> {
     let parsedUrl: URL;
     try {
       parsedUrl = new URL(url);
     } catch (error) {
-      return { valid: false, reason: 'URL 格式无效' };
+      return { valid: false, reason: 'URL 格式无效', errorCode: 'invalid_url' };
     }
 
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      return { valid: false, reason: `不支持的协议: ${parsedUrl.protocol}` };
+      return { valid: false, reason: `不支持的协议: ${parsedUrl.protocol}`, errorCode: 'unsupported_protocol' };
     }
 
     if (!await this.ensureOnlinePermission(parsedUrl)) {
-      return { valid: false, reason: '在线检查权限被拒绝或未授予' };
+      return { valid: false, reason: '在线检查权限被拒绝或未授予', errorCode: 'permission_denied' };
     }
 
     try {
@@ -144,7 +146,7 @@ class OrganizeService {
         return { valid: true };
       }
 
-      return { valid: false, reason: `HTTP ${headResponse.status}` };
+      return { valid: false, reason: `HTTP ${headResponse.status}`, errorCode: 'http' };
     } catch (headError) {
       try {
         // 某些站点会拒绝 HEAD；使用可检查响应的 GET 回退。不能使用
@@ -155,17 +157,18 @@ class OrganizeService {
           cache: 'no-store',
         });
         if (getResponse.type === 'opaque' || getResponse.status === 0) {
-          return { valid: false, reason: '响应不可验证（可能是跨域策略或权限不足）' };
+          return { valid: false, reason: '响应不可验证（可能是跨域策略或权限不足）', errorCode: 'permission_denied' };
         }
         return this.isReachableStatus(getResponse.status)
           ? { valid: true }
-          : { valid: false, reason: `HTTP ${getResponse.status}` };
+          : { valid: false, reason: `HTTP ${getResponse.status}`, errorCode: 'http' };
       } catch (getError) {
         return {
           valid: false,
           reason: getError instanceof Error
             ? `在线检查失败（权限或跨域策略）：${getError.message}`
             : `在线检查失败（权限或跨域策略）：${String(getError)}`,
+          errorCode: 'network',
         };
       }
     }
@@ -566,6 +569,7 @@ class OrganizeService {
     let validCount = 0;
     let invalidCount = 0;
     const invalidDetails: string[] = [];
+    const errorCodes = new Set<NonNullable<OrganizeResult['errorCode']>>();
     let cursor = 0;
 
     const worker = async () => {
@@ -580,6 +584,7 @@ class OrganizeService {
           validCount++;
         } else {
           invalidCount++;
+          if (validationResult.errorCode) errorCodes.add(validationResult.errorCode);
           invalidDetails.push(
             `"${bookmark.title}" (${bookmark.url}): ${validationResult.reason || '不可访问'}`
           );
@@ -597,7 +602,8 @@ class OrganizeService {
         + (invalidDetails.length > 0
           ? `。异常详情: ${invalidDetails.slice(0, 5).join('; ')}`
           : ''),
-      error: invalidCount > 0 ? `${invalidCount} 个书签验证失败` : undefined
+      error: invalidCount > 0 ? `${invalidCount} 个书签验证失败` : undefined,
+      errorCode: errorCodes.size === 1 ? [...errorCodes][0] : invalidCount > 0 ? 'operation' : undefined,
     };
   }
   

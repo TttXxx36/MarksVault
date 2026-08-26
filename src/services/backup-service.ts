@@ -1,19 +1,31 @@
-import { browser } from 'wxt/browser';
-import { BookmarkBackup, BackupResult, BackupStatus } from '../types/backup';
+import { BookmarkBackupV1, BookmarkBackupV2, BackupResult, BackupStatus } from '../types/backup';
 import { GitHubCredentials } from '../utils/storage-service';
-import { BookmarkItem, findBookmarkBar, isBookmarkBarNode, isBookmarkNode } from '../utils/bookmark-service';
+import { BookmarkItem, isBookmarkBarNode } from '../utils/bookmark-service';
 import bookmarkService from '../utils/bookmark-service';
 import githubService, { isRetryableGitHubError, GitHubApiError, RetryableError } from './github-service';
 import storageService from '../utils/storage-service';
 import { getFaviconUrl } from '../utils/favicon-service';
 import { BookmarkSelection } from '../types/task';
+import { createBookmarkBackupV2 } from '../core/backup/schema-v2';
+import { prepareGitHubBookmarkRestore, DEFAULT_BACKUP_REPO as V2_BACKUP_REPO } from './github-bookmark-restore-service';
 
 // 备份存储库名称
-const DEFAULT_BACKUP_REPO = 'marksvault-backups';
+const DEFAULT_BACKUP_REPO = V2_BACKUP_REPO;
 // 备份文件路径：最新文件和带时间戳的历史文件
 const LATEST_BACKUP_PATH = 'bookmarks_backup_latest.json';
 // 设置文件备份文件夹路径
 const SETTINGS_FOLDER_PATH = 'settings';
+
+const parseBackupFilenameTimestamp = (filename: string, prefix: 'bookmarks' | 'settings'): number => {
+  const escapedPrefix = prefix === 'bookmarks' ? 'bookmarks' : 'settings';
+  const match = filename.match(new RegExp(`${escapedPrefix}_backup_(\\d{4})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(\\d{2})(?:_([a-z0-9]+)-[a-z0-9]+)?\\.json`, 'i'));
+  if (!match) return 0;
+  const [, year, month, day, hour, minute, second, millisBase36] = match;
+  const parsedMillis = millisBase36 ? Number.parseInt(millisBase36, 36) : NaN;
+  return Number.isFinite(parsedMillis)
+    ? parsedMillis
+    : new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).getTime();
+};
 // 备份类型常量
 export enum BackupType {
   BOOKMARKS = 'bookmarks',
@@ -39,11 +51,7 @@ class BackupService {
    * suffix 用于避免同一秒内的备份覆盖彼此。
    */
   private parseBookmarksBackupTimestamp(filename: string): number {
-    const match = filename.match(/bookmarks_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(?:_[a-z0-9-]+)?\.json/i);
-    if (!match) return 0;
-
-    const [, year, month, day, hour, minute, second] = match;
-    return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).getTime();
+    return parseBackupFilenameTimestamp(filename, 'bookmarks');
   }
 
   /**
@@ -88,7 +96,7 @@ class BackupService {
    * 创建书签备份
    * @returns 序列化的书签备份数据
    */
-  private async createBackupData(): Promise<BookmarkBackup> {
+  private async createBackupData(): Promise<BookmarkBackupV2> {
     // 获取所有书签
     const bookmarksResult = await bookmarkService.getAllBookmarks();
     if (!bookmarksResult.success) {
@@ -97,42 +105,8 @@ class BackupService {
 
     const bookmarks = bookmarksResult.data as BookmarkItem[];
 
-    // 计算元数据
-    let totalBookmarks = 0;
-    let totalFolders = 0;
-
-    const countItems = (items: BookmarkItem[]) => {
-      items.forEach((item: BookmarkItem) => {
-        if (item.type === 'separator') return;
-        if (item.isFolder) {
-          totalFolders++;
-          if (item.children && item.children.length > 0) {
-            countItems(item.children);
-          }
-        } else if (isBookmarkNode(item)) {
-          totalBookmarks++;
-        }
-      });
-    };
-
-    countItems(bookmarks);
-
-    // 创建源信息
-    const source = `MarksVault Extension (${navigator.platform})`;
-
-    // 创建备份对象
-    const backup: BookmarkBackup = {
-      version: '1.0',
-      timestamp: Date.now(),
-      source,
-      bookmarks,
-      metadata: {
-        totalBookmarks,
-        totalFolders
-      }
-    };
-
-    return backup;
+    // v2 备份保留全部语义根目录和节点类型；旧 v1 文件仅在恢复时兼容读取。
+    return createBookmarkBackupV2(bookmarks, new Date());
   }
 
   /**
@@ -346,7 +320,12 @@ class BackupService {
     if (type === BackupType.SETTINGS) {
       return this.restoreSettingsFromGitHub(credentials, username, useTimestampedFile, timestampedFilePath);
     } else {
-      return this.restoreBookmarksFromGitHub(credentials, username, useTimestampedFile, timestampedFilePath);
+      // 书签恢复统一走“下载校验 → 本地导入快照 → 差异预览”流程。
+      // 该调用只准备恢复计划，不调用任何 browser.bookmarks 写入 API。
+      return prepareGitHubBookmarkRestore(credentials, username, {
+        useTimestampedFile,
+        timestampedFilePath,
+      });
     }
   }
 
@@ -403,12 +382,7 @@ class BackupService {
 
           // 解析文件名中的时间戳，以便找到最新文件
           const parseTimestamp = (filename: string): number => {
-            const match = filename.match(/settings_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.json/);
-            if (match) {
-              const [_, year, month, day, hour, minute, second] = match;
-              return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).getTime();
-            }
-            return 0;
+            return parseBackupFilenameTimestamp(filename, 'settings');
           };
 
           // 按时间戳降序排序文件，取第一个（最新的）
@@ -504,270 +478,9 @@ class BackupService {
     }
   }
 
-  /**
-   * 从GitHub恢复书签
-   * @param credentials GitHub认证凭据
-   * @param username GitHub用户名
-   * @param useTimestampedFile 是否使用带时间戳的文件而不是最新文件
-   * @param timestampedFilePath 带时间戳的文件路径(如果useTimestampedFile为true)
-   * @returns 恢复结果
-   */
-  private async restoreBookmarksFromGitHub(
-    credentials: GitHubCredentials,
-    username: string,
-    useTimestampedFile: boolean = false,
-    timestampedFilePath?: string
-  ): Promise<BackupResult> {
-    try {
-      // 1. 确保存储库存在
-      const repoExists = await githubService.repoExists(credentials, username, DEFAULT_BACKUP_REPO);
-      if (!repoExists) {
-        throw new Error('备份存储库不存在，请先进行备份');
-      }
-
-      // 2. 获取备份文件内容
-      const filePath = useTimestampedFile && timestampedFilePath
-        ? (timestampedFilePath.startsWith('bookmarks/') ? timestampedFilePath : `bookmarks/${timestampedFilePath}`)
-        : await this.resolveLatestBookmarksBackupFilePath(credentials, username);
-
-      const fileData = await githubService.getFileContent(
-        credentials,
-        username,
-        DEFAULT_BACKUP_REPO,
-        filePath
-      );
-
-      // 3. 解析备份数据
-      const backupData = JSON.parse(fileData.content) as BookmarkBackup;
-
-      // 4. 验证数据格式
-      if (!backupData.bookmarks || !Array.isArray(backupData.bookmarks)) {
-        throw new Error('备份文件格式不正确');
-      }
-
-      console.log('备份数据结构:', JSON.stringify(backupData.bookmarks.map((b: BookmarkItem) => ({ id: b.id, title: b.title, children: b.children?.length || 0 }))));
-
-      // 5. 执行恢复操作
-      // 5.1 获取书签根文件夹
-      const rootsResult = await bookmarkService.getBookmarkRoots();
-      if (!rootsResult.success || !rootsResult.data) {
-        throw new Error(`获取书签根文件夹失败: ${rootsResult.error}`);
-      }
-
-      const roots = rootsResult.data;
-      console.log('浏览器书签根:', JSON.stringify(roots.map((r: BookmarkItem) => ({ id: r.id, title: r.title }))));
-
-      // 兼容 Chrome/Edge/Firefox：按 ID + 标题双策略识别书签栏。
-      const bookmarkBar = findBookmarkBar(roots);
-      if (!bookmarkBar) {
-        throw new Error('找不到书签栏，无法恢复书签');
-      }
-
-      console.log('找到书签栏:', bookmarkBar.id, bookmarkBar.title);
-
-      // 5.2 准备要恢复的书签数据
-      // 从备份中查找合适的书签数据
-      let bookmarksToRestore: BookmarkItem[] = [];
-
-      // 尝试方法1: 查找标题为"书签栏"的项
-      const bookmarkBarInBackup = findBookmarkBar(
-        backupData.bookmarks.flatMap((root: BookmarkItem) => root.children || [])
-      );
-
-      if (bookmarkBarInBackup && bookmarkBarInBackup.children) {
-        console.log('方法1: 从备份中找到书签栏:', bookmarkBarInBackup.title);
-        bookmarksToRestore = bookmarkBarInBackup.children;
-      } else {
-        // 尝试方法2: 使用备份根节点的第一个子节点的子节点
-        console.log('方法1失败，尝试方法2');
-        if (backupData.bookmarks[0] && backupData.bookmarks[0].children) {
-          // 通常第一个子节点会是书签栏
-          const firstChild = backupData.bookmarks[0].children[0];
-          if (firstChild && firstChild.children) {
-            console.log('方法2: 使用第一个子节点的子节点');
-            bookmarksToRestore = firstChild.children;
-          } else if (backupData.bookmarks[0].children) {
-            // 如果第一个子节点没有子节点，使用所有子节点
-            console.log('方法2: 使用所有子节点');
-            bookmarksToRestore = backupData.bookmarks[0].children;
-          }
-        }
-      }
-
-      // 方法3: 最后尝试用直接的书签数据
-      if (bookmarksToRestore.length === 0) {
-        console.log('方法3: 直接使用根书签数据');
-        // 如果前两种方法都找不到，直接使用根书签数据
-        if (backupData.bookmarks[0] && backupData.bookmarks[0].children) {
-          bookmarksToRestore = backupData.bookmarks[0].children;
-        } else {
-          bookmarksToRestore = backupData.bookmarks;
-        }
-      }
-
-      if (bookmarksToRestore.length === 0) {
-        throw new Error('备份数据中找不到可恢复的书签');
-      }
-
-      console.log(`准备恢复 ${bookmarksToRestore.length} 个书签项`);
-
-      // 5.3 前置校验备份数据（必须在任何删除操作之前执行）
-      // 防止恶意/损坏的备份文件导致递归栈溢出，或超大库在清空后执行超时
-      const MAX_RESTORE_DEPTH = 100; // 最大嵌套层级
-      const MAX_RESTORE_NODE_COUNT = 5000; // 最大节点总数
-
-      let maxDepth = 0;
-      let totalNodes = 0;
-      const validateBackupTree = (items: BookmarkItem[], depth: number): void => {
-        for (const item of items) {
-          totalNodes++;
-          if (depth > maxDepth) {
-            maxDepth = depth;
-          }
-          if (item.children && item.children.length > 0) {
-            validateBackupTree(item.children, depth + 1);
-          }
-        }
-      };
-
-      validateBackupTree(bookmarksToRestore, 0);
-
-      if (maxDepth > MAX_RESTORE_DEPTH) {
-        throw new Error(
-          `备份文件异常：嵌套层级过深（超过 ${MAX_RESTORE_DEPTH} 层，实际 ${maxDepth} 层），已取消恢复`
-        );
-      }
-      if (totalNodes > MAX_RESTORE_NODE_COUNT) {
-        throw new Error(
-          `备份文件过大（超过 ${MAX_RESTORE_NODE_COUNT} 个节点，实际 ${totalNodes} 个），已取消恢复`
-        );
-      }
-
-      console.log(`备份数据校验通过：${totalNodes} 个节点，最大深度 ${maxDepth}`);
-
-      // 5.4 删除前暂存现有书签树（序列化后持久化到 storage.local）
-      // 暂存失败则拒绝执行恢复，确保任何删除操作发生前数据已有保底。
-      // 该数据仅作保底保留，供未来回滚入口使用；本任务不提供 UI 回滚入口。
-      const pendingBackupJson = JSON.stringify(bookmarkBar);
-      const stashResult = await storageService.setStorageData('pending_restore_backup', pendingBackupJson);
-      if (!stashResult.success) {
-        throw new Error(`暂存现有书签失败，已取消恢复: ${stashResult.error || '未知错误'}`);
-      }
-      console.log(`已暂存现有书签到 pending_restore_backup，共 ${bookmarkBar.children?.length || 0} 个一级书签项`);
-
-      // 5.5 递归删除现有书签
-      const existingBookmarks = bookmarkBar.children || [];
-      console.log(`当前有 ${existingBookmarks.length} 个书签项将被清除`);
-
-      // 5.6 递归创建新书签的函数
-      const createBookmarks = async (
-        items: BookmarkItem[],
-        parentId: string
-      ): Promise<void> => {
-        for (const item of items) {
-          try {
-            if (item.type === 'separator' || item.unmodifiable) continue;
-            if (item.isFolder) {
-              // 创建文件夹
-              const folderResult = await bookmarkService.createFolder({
-                parentId,
-                title: item.title
-              });
-
-              if (!folderResult.success || !folderResult.data?.id) {
-                throw new Error(`创建文件夹失败: ${item.title} (${folderResult.error || '未知错误'})`);
-              }
-
-              // 递归创建子书签
-              if (item.children && item.children.length > 0) {
-                await createBookmarks(item.children, folderResult.data.id);
-              }
-            } else if (item.url) {
-              // 创建书签
-              const bookmarkResult = await bookmarkService.createBookmark({
-                parentId,
-                title: item.title,
-                url: item.url
-              });
-
-              if (!bookmarkResult.success) {
-                throw new Error(`创建书签失败: ${item.title} (${bookmarkResult.error || '未知错误'})`);
-              }
-            }
-          } catch (itemError) {
-            throw new Error(
-              `处理书签项 ${item.title} 时失败: ${itemError instanceof Error ? itemError.message : String(itemError)}`
-            );
-          }
-        }
-      };
-
-      // 5.7 开始恢复过程
-      // 先移除现有书签
-      try {
-        for (const child of bookmarkBar.children || []) {
-          const removeResult = await bookmarkService.removeBookmarkTree(child.id);
-          if (!removeResult.success) {
-            throw new Error(`删除现有书签失败: ${child.title || child.id} (${removeResult.error || '未知错误'})`);
-          }
-        }
-        console.log('成功清除现有书签');
-
-        // 恢复书签
-        await createBookmarks(bookmarksToRestore, bookmarkBar.id);
-        console.log('成功恢复书签');
-      } catch (restoreError) {
-        console.error('恢复过程中发生错误:', restoreError);
-        throw restoreError;
-      }
-
-      // 5.8 恢复全部成功，清理暂存备份（清理失败仅记录日志，不影响恢复结果）
-      try {
-        await browser.storage.local.remove('pending_restore_backup');
-        console.log('已清理恢复暂存备份 pending_restore_backup');
-      } catch (cleanupError) {
-        console.error('清理恢复暂存备份失败:', cleanupError);
-      }
-
-      // 6. 保存恢复状态
-      const backupStatus: BackupStatus = {
-        lastRestoreTime: Date.now(),
-        lastOperationStatus: 'success'
-      };
-
-      await storageService.saveBackupStatus(backupStatus);
-
-      // 7. 返回成功结果
-      return {
-        success: true,
-        data: {
-          timestamp: backupData.timestamp,
-          bookmarksCount: backupData.metadata?.totalBookmarks || bookmarksToRestore.length
-        },
-        timestamp: backupData.timestamp
-      };
-    } catch (error) {
-      console.error('书签恢复失败:', error);
-
-      // 注意：此处刻意不清理 pending_restore_backup 暂存数据。
-      // 恢复失败时该数据保留在 storage.local，作为数据保底供未来回滚入口使用。
-      // 仅当恢复全部成功（5.8）时才删除。
-
-      // 保存失败状态
-      const backupStatus: BackupStatus = {
-        lastOperationStatus: 'failed',
-        errorMessage: error instanceof Error ? error.message : String(error)
-      };
-
-      await storageService.saveBackupStatus(backupStatus);
-
-      return {
-        success: false,
-        retryable: isRetryableGitHubError(error),
-        error: `恢复失败: ${error instanceof Error ? error.message : String(error)}`
-      };
-    }
-  }
+  // GitHub bookmark restoration is intentionally implemented only by
+  // prepareGitHubBookmarkRestore. Keeping a second direct-write path here
+  // would bypass semantic-root mapping, preview, leases and RestoreJournal.
 
   /**
    * 获取备份统计信息
@@ -826,13 +539,7 @@ class BackupService {
 
       // 解析文件名中的时间戳
       const parseTimestamp = (filename: string): number => {
-        // 使用新格式的正则表达式
-        const match = filename.match(/bookmarks_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.json/);
-        if (match) {
-          const [_, year, month, day, hour, minute, second] = match;
-          return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).getTime();
-        }
-        return 0;
+        return parseBackupFilenameTimestamp(filename, 'bookmarks');
       };
 
       // 提取时间戳并排序
@@ -866,12 +573,15 @@ class BackupService {
             latestFile.path // 已经包含了bookmarks/前缀
           );
 
-          const backupData = JSON.parse(fileData.content) as BookmarkBackup;
+          const backupData = JSON.parse(fileData.content) as BookmarkBackupV1 | BookmarkBackupV2;
 
           // 提取元数据
-          if (backupData.metadata) {
+          if ('metadata' in backupData && backupData.metadata) {
             totalBookmarks = backupData.metadata.totalBookmarks;
             totalFolders = backupData.metadata.totalFolders;
+          } else if ('stats' in backupData && backupData.stats) {
+            totalBookmarks = backupData.stats.bookmarks;
+            totalFolders = backupData.stats.folders;
           }
         } catch (error) {
           console.error('获取最新备份内容失败:', error);
@@ -1522,13 +1232,7 @@ class BackupService {
 
       // 5. 解析文件名中的时间戳
       const parseTimestamp = (filename: string): number => {
-        // 匹配文件名中的时间戳部分 (例如: xxx_backup_20230415123045.json)
-        const match = filename.match(/_backup_(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})\.json/);
-        if (match) {
-          const [_, year, month, day, hour, minute, second] = match;
-          return new Date(`${year}-${month}-${day}T${hour}:${minute}:${second}`).getTime();
-        }
-        return 0;
+        return parseBackupFilenameTimestamp(filename, type === BackupType.SETTINGS ? 'settings' : 'bookmarks');
       };
 
       // 6. 按时间戳排序（从新到旧）
