@@ -14,14 +14,28 @@ import { getAiClassificationJob } from '../../../services/ai-classification-serv
 
 const AiClassificationTaskCard: React.FC = () => {
   const [job, setJob] = useState<AiClassificationJob | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
 
   useEffect(() => {
-    void browser.runtime.sendMessage({ type: 'GET_AI_CLASSIFICATION_JOB' })
-      .then((response: { success?: boolean; job?: AiClassificationJob | null }) => {
-        if (response?.success) setJob(response.job || null);
-        else return getAiClassificationJob().then(setJob);
-      })
-      .catch(() => getAiClassificationJob().then(setJob).catch(() => setJob(null)));
+    let disposed = false;
+    const refresh = async () => {
+      setClock(Date.now());
+      try {
+        const response = await browser.runtime.sendMessage({ type: 'GET_AI_CLASSIFICATION_JOB' }) as { success?: boolean; job?: AiClassificationJob | null };
+        if (!disposed && response?.success) setJob(response.job || null);
+        else if (!disposed) setJob(await getAiClassificationJob());
+      } catch {
+        if (!disposed) {
+          try {
+            setJob(await getAiClassificationJob());
+          } catch {
+            setJob(null);
+          }
+        }
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 1000);
     const handleStorageChange = (
       changes: { [key: string]: Browser.storage.StorageChange },
       areaName: Browser.storage.AreaName,
@@ -31,7 +45,11 @@ const AiClassificationTaskCard: React.FC = () => {
       if (next) setJob(next);
     };
     browser.storage.onChanged.addListener(handleStorageChange);
-    return () => browser.storage.onChanged.removeListener(handleStorageChange);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+      browser.storage.onChanged.removeListener(handleStorageChange);
+    };
   }, []);
 
   if (!job) return null;
@@ -67,7 +85,7 @@ const AiClassificationTaskCard: React.FC = () => {
             已完成 {completed} / {total} 个书签；失败 {failed} 个。关闭 Popup 不会中断后台任务。
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            服务：{providerDomain}；{currentBatch ? `当前批次 ${currentBatch.bookmarkIds.length} 条，已尝试 ${currentBatch.attempts} 次` : '当前没有正在处理的批次'}
+            服务：{providerDomain}；{currentBatch ? `当前批次 ${currentBatch.bookmarkIds.length} 条，已尝试 ${currentBatch.attempts} 次，已耗时 ${Math.max(0, Math.floor((clock - (currentBatch.startedAt || clock)) / 1000))} 秒` : '当前没有正在处理的批次'}
           </Typography>
           {job.error && <Alert severity="warning">{job.error}</Alert>}
           <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>

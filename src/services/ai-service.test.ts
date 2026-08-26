@@ -16,6 +16,10 @@ describe('ai-service user-configured provider', () => {
     (globalThis as any).fetch = jest.fn();
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   test('keeps API key separate from public provider configuration', async () => {
     const config = await saveAiProviderConfig({
       ...createDefaultAiProviderConfig(),
@@ -179,6 +183,27 @@ describe('ai-service user-configured provider', () => {
 
     expect(result.assignments[0]).toEqual(expect.objectContaining({ categoryName: '其他' }));
     expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('records both parsing attempts when the repair response is also invalid', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxAttempts: 2,
+    };
+    (globalThis as any).fetch
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ output_text: '{"categories":[]}{"assignments":[]}' }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ output_text: 'still not JSON' }) });
+    const progress: any[] = [];
+    await expect(classifyBookmarks(config, [{
+      id: 'b1', title: 'Example', url: 'https://example.com', path: '',
+    }], { onBatchProgress: item => { progress.push(item); } })).rejects.toMatchObject({
+      code: 'INVALID_JSON',
+      attempts: 2,
+    });
+    expect(progress.at(-1)).toEqual(expect.objectContaining({ state: 'failed', attempts: 2, errorCode: 'INVALID_JSON' }));
   });
 
   test('uses only the final Responses assistant message', async () => {
@@ -437,6 +462,120 @@ describe('ai-service user-configured provider', () => {
     });
     expect((globalThis as any).fetch.mock.calls.length - callsBeforeResume).toBe(1);
     expect(resumed.assignments).toHaveLength(20);
+  });
+
+  test('uses bounded v2.1.2 defaults and migrates the legacy 60-second/20-item defaults', async () => {
+    const defaults = createDefaultAiProviderConfig();
+    expect(defaults.timeoutMs).toBe(30_000);
+    expect(defaults.batchTimeoutMs).toBe(90_000);
+    expect(defaults.maxAttempts).toBe(2);
+    expect(defaults.batchSize).toBe(10);
+
+    await browser.storage.local.set({
+      ai_provider_config: {
+        enabled: true,
+        endpoint: 'https://example.com',
+        protocol: 'responses',
+        authType: 'bearer',
+        apiKeyHeader: 'X-API-Key',
+        model: 'legacy-model',
+        systemPrompt: '',
+        temperature: 0.1,
+        timeoutMs: 60_000,
+        batchSize: 20,
+        maxCategories: 12,
+      },
+      ai_provider_secret: 'fake-secret',
+    });
+    const migrated = await getAiProviderConfig();
+    expect(migrated.timeoutMs).toBe(30_000);
+    expect(migrated.batchTimeoutMs).toBe(90_000);
+    expect(migrated.maxAttempts).toBe(2);
+    expect(migrated.batchSize).toBe(10);
+  });
+
+  test('stops a stalled 10-item batch after two attempts and records the real count', async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn((_url: string, init: RequestInit) => new Promise<never>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    }));
+    (globalThis as any).fetch = fetchMock;
+    const progress: any[] = [];
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'slow-model',
+      timeoutMs: 5_000,
+      batchTimeoutMs: 12_000,
+      maxAttempts: 2,
+      batchSize: 10,
+    };
+    const pending = classifyBookmarks(config, Array.from({ length: 10 }, (_, index) => ({
+      id: `b${index}`, title: `Bookmark ${index}`, url: `https://example.com/${index}`, path: '',
+    })), { onBatchProgress: item => { progress.push(item); } }).catch(error => error);
+    await jest.advanceTimersByTimeAsync(12_000);
+    const error = await pending;
+    expect(error).toMatchObject({ code: 'TIMEOUT', attempts: 2 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(progress.at(-1)).toEqual(expect.objectContaining({ state: 'failed', attempts: 2, errorCode: 'TIMEOUT' }));
+    jest.useRealTimers();
+  });
+
+  test('splits a timed-out 20-item batch within the same deadline', async () => {
+    jest.useFakeTimers();
+    const validResponse = JSON.stringify({ output_text: JSON.stringify({
+      categories: [{ name: '其他' }],
+      assignments: [],
+    }) });
+    const fetchMock = jest.fn()
+      .mockImplementationOnce((_url: string, init: RequestInit) => new Promise<never>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+      }))
+      .mockResolvedValue({ ok: true, status: 200, text: async () => validResponse });
+    (globalThis as any).fetch = fetchMock;
+    const input = Array.from({ length: 20 }, (_, index) => ({
+      id: `b${index}`, title: `Bookmark ${index}`, url: `https://example.com/${index}`, path: '',
+    }));
+    const pending = classifyBookmarks({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'adaptive-model',
+      timeoutMs: 5_000,
+      batchTimeoutMs: 12_000,
+      maxAttempts: 1,
+      batchSize: 20,
+    }, input);
+    await jest.advanceTimersByTimeAsync(5_000);
+    const result = await pending;
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.assignments).toHaveLength(20);
+    jest.useRealTimers();
+  });
+
+  test('processes 100 synthetic bookmarks as ten bounded batches', async () => {
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ output_text: JSON.stringify({ categories: [{ name: '其他' }], assignments: [] }) }),
+    });
+    (globalThis as any).fetch = fetchMock;
+    const input = Array.from({ length: 100 }, (_, index) => ({
+      id: `b${index}`, title: `Bookmark ${index}`, url: `https://example.com/${index}`, path: 'Bookmarks Bar',
+    }));
+    const startedAt = Date.now();
+    const result = await classifyBookmarks({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'fast-fixture-model',
+      maxAttempts: 1,
+      batchSize: 10,
+    }, input);
+    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(result.assignments).toHaveLength(100);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
 });

@@ -32,6 +32,7 @@ const AiClassifyButton: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [providerOrigin, setProviderOrigin] = useState<string | null>(null);
   const [snapshotName, setSnapshotName] = useState('');
+  const [clock, setClock] = useState(() => Date.now());
 
   const loadPlan = async () => {
     const storedPlan = await getLastAiClassificationPlan();
@@ -55,6 +56,37 @@ const AiClassifyButton: React.FC = () => {
     browser.storage.onChanged.addListener(handleStorageChange);
     return () => browser.storage.onChanged.removeListener(handleStorageChange);
   }, []);
+
+  // AI checkpoints are stored in IndexedDB in production, so storage.onChanged
+  // is not a live progress channel. Poll the background owner while this view
+  // is open; closing the Popup remains safe because the job itself is persisted.
+  useEffect(() => {
+    if (!open) return undefined;
+    let disposed = false;
+    const refresh = async () => {
+      setClock(Date.now());
+      try {
+        const response = await browser.runtime.sendMessage({ type: 'GET_AI_CLASSIFICATION_JOB' }) as { success?: boolean; job?: AiClassificationJob | null };
+        if (disposed || !response?.success) return;
+        const nextJob = response.job || null;
+        setJob(nextJob);
+        if (nextJob?.state === 'awaiting_review') {
+          const nextPlan = await getLastAiClassificationPlan();
+          if (!disposed && nextPlan) setPlan(nextPlan);
+        }
+      } catch {
+        // The task card and the next poll remain available if the worker is
+        // being restarted; do not replace a useful last-known state with an
+        // error while a background task is still running.
+      }
+    };
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 1000);
+    return () => {
+      disposed = true;
+      clearInterval(timer);
+    };
+  }, [open]);
 
   const sendJobCommand = async (type: string): Promise<AiClassificationJob | null> => {
     const response = await browser.runtime.sendMessage({ type }) as { success?: boolean; job?: AiClassificationJob; error?: string };
@@ -165,7 +197,7 @@ const AiClassifyButton: React.FC = () => {
   };
 
   const close = () => {
-    if (!busy) setOpen(false);
+    if (!busy || (job && !plan)) setOpen(false);
   };
 
   const completedCount = job?.batches.filter(batch => batch.state === 'completed')
@@ -187,7 +219,7 @@ const AiClassifyButton: React.FC = () => {
       <Dialog open={open} onClose={close} maxWidth="sm" fullWidth>
         <DialogTitle>AI 智能分类预览</DialogTitle>
         <DialogContent dividers>
-          {busy && <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 2 }}><CircularProgress size={20} /><Typography variant="body2">正在处理…</Typography></Box>}
+          {busy && !job && <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 2 }}><CircularProgress size={20} /><Typography variant="body2">正在启动后台任务…</Typography></Box>}
           {error && <Alert severity="error" sx={{ mb: 1 }}>{error}</Alert>}
           {job && !plan && (
             <Stack spacing={1.25}>
@@ -199,7 +231,7 @@ const AiClassifyButton: React.FC = () => {
                 已完成 {completedCount} / {totalCount} 个书签；失败 {failedCount} 个。关闭此窗口不会停止后台任务。
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                目标服务：{providerOrigin || '未配置'}；{currentBatch ? `当前批次 ${currentBatch.bookmarkIds.length} 条，已尝试 ${currentBatch.attempts} 次` : '等待下一批'}。
+                目标服务：{providerOrigin || '未配置'}；{currentBatch ? `当前批次 ${currentBatch.bookmarkIds.length} 条，已尝试 ${currentBatch.attempts} 次，已耗时 ${Math.max(0, Math.floor((clock - (currentBatch.startedAt || clock)) / 1000))} 秒` : '等待下一批'}。
               </Typography>
               {job.error && <Alert severity="warning">{job.error}</Alert>}
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
@@ -255,7 +287,7 @@ const AiClassifyButton: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={close} disabled={busy}>关闭</Button>
+          <Button onClick={close} disabled={busy && !(job && !plan)}>关闭</Button>
           {plan?.state === 'preview' && <Button onClick={apply} variant="contained" disabled={busy || !plan.assignments.length}>确认并执行</Button>}
           {plan?.state === 'applied' && <Button onClick={rollback} color="warning" variant="outlined" disabled={busy}>撤销本次分类</Button>}
         </DialogActions>

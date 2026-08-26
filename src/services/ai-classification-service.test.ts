@@ -156,6 +156,7 @@ describe('ai-classification rollback safety', () => {
       endpoint: 'https://example.com',
       model: 'demo-model',
       apiKey: 'fake-secret',
+      batchSize: 20,
     });
     const responseFor = (ids: string[]) => JSON.stringify({ output_text: JSON.stringify({
       categories: [{ name: '其他' }],

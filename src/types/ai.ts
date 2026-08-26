@@ -18,6 +18,10 @@ export interface AiProviderConfig {
   systemPrompt: string;
   temperature: number;
   timeoutMs: number;
+  /** Per-request timeout. The v2.1.2 default is 30 seconds. */
+  batchTimeoutMs: number;
+  /** Maximum attempts for one request, including the first attempt. */
+  maxAttempts: number;
   batchSize: number;
   maxCategories: number;
 }

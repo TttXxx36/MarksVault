@@ -270,6 +270,29 @@ const AiSettingsCard: React.FC = () => {
             sx={{ flex: 1 }}
           />
         </Box>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          <TextField
+            size="small"
+            type="number"
+            label="单次请求超时（秒）"
+            value={Math.round(config.timeoutMs / 1000)}
+            onChange={event => update('timeoutMs', Number(event.target.value) * 1000)}
+            inputProps={{ min: 5, max: 120 }}
+            sx={{ flex: 1 }}
+          />
+          <TextField
+            size="small"
+            type="number"
+            label="单批总超时（秒）"
+            value={Math.round(config.batchTimeoutMs / 1000)}
+            onChange={event => update('batchTimeoutMs', Number(event.target.value) * 1000)}
+            inputProps={{ min: 30, max: 300 }}
+            sx={{ flex: 1 }}
+          />
+        </Box>
+        <Typography variant="caption" color="text.secondary">
+          默认单次 30 秒、单批 90 秒、最多尝试 2 次；超时批次会失败并可单独重试，不会让整个任务无限等待。
+        </Typography>
         <Box sx={{ display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
           <Button variant="outlined" onClick={handleTest} disabled={loading || saving || testing || !config.endpoint}>
             {testing ? '测试中…' : '测试 API 连通性'}

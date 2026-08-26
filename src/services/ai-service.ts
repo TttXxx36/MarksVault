@@ -14,6 +14,11 @@ export const AI_CONFIG_DRAFT_KEY = 'ai_provider_config_draft';
 export const AI_SECRET_DRAFT_KEY = 'ai_provider_secret_draft';
 export const AI_PROMPT_CONTRACT_VERSION = 1 as const;
 
+export const AI_DEFAULT_TIMEOUT_MS = 30_000;
+export const AI_DEFAULT_BATCH_TIMEOUT_MS = 90_000;
+export const AI_DEFAULT_MAX_ATTEMPTS = 2;
+export const AI_DEFAULT_BATCH_SIZE = 10;
+
 export type AiResponseFormatErrorCode =
   | 'INVALID_JSON'
   | 'MULTIPLE_JSON'
@@ -22,11 +27,38 @@ export type AiResponseFormatErrorCode =
 
 export class AiResponseFormatError extends Error {
   readonly code: AiResponseFormatErrorCode;
+  attempts?: number;
 
-  constructor(code: AiResponseFormatErrorCode, message: string) {
+  constructor(code: AiResponseFormatErrorCode, message: string, attempts?: number) {
     super(message);
     this.name = 'AiResponseFormatError';
     this.code = code;
+    this.attempts = attempts;
+  }
+}
+
+export type AiServiceErrorCode =
+  | 'TIMEOUT'
+  | 'BATCH_TIMEOUT'
+  | 'NETWORK'
+  | 'AUTH'
+  | 'NOT_FOUND'
+  | 'RATE_LIMIT'
+  | 'SERVER'
+  | 'HTTP'
+  | 'CANCELLED';
+
+export class AiServiceError extends Error {
+  readonly code: AiServiceErrorCode;
+  readonly retryable: boolean;
+  attempts?: number;
+
+  constructor(code: AiServiceErrorCode, message: string, retryable = false, attempts?: number) {
+    super(message);
+    this.name = 'AiServiceError';
+    this.code = code;
+    this.retryable = retryable;
+    this.attempts = attempts;
   }
 }
 
@@ -40,8 +72,10 @@ export const createDefaultAiProviderConfig = (): AiProviderConfig => ({
   model: '',
   systemPrompt: '',
   temperature: 0.1,
-  timeoutMs: 60000,
-  batchSize: 20,
+  timeoutMs: AI_DEFAULT_TIMEOUT_MS,
+  batchTimeoutMs: AI_DEFAULT_BATCH_TIMEOUT_MS,
+  maxAttempts: AI_DEFAULT_MAX_ATTEMPTS,
+  batchSize: AI_DEFAULT_BATCH_SIZE,
   maxCategories: 12,
 });
 
@@ -99,6 +133,11 @@ const normalizeSupplementalPrompt = (value: unknown): string => {
 
 const normalizeConfig = (value: Partial<AiProviderConfig>): AiProviderConfig => {
   const defaults = createDefaultAiProviderConfig();
+  // v2.0.1/v2.1.1 did not expose these controls and stored 60 seconds / 20
+  // items as their defaults. Treat those legacy values as missing so an
+  // existing installation receives the bounded v2.1.2 defaults.
+  const legacyTimeout = value.timeoutMs === 60000 && value.batchTimeoutMs === undefined;
+  const legacyBatchSize = value.batchSize === 20 && value.batchTimeoutMs === undefined;
   return {
     ...defaults,
     ...value,
@@ -110,8 +149,10 @@ const normalizeConfig = (value: Partial<AiProviderConfig>): AiProviderConfig => 
     model: typeof value.model === 'string' ? value.model.trim() : '',
     systemPrompt: normalizeSupplementalPrompt(value.systemPrompt),
     temperature: clamp(typeof value.temperature === 'number' && Number.isFinite(value.temperature) ? value.temperature : defaults.temperature, 0, 1),
-    timeoutMs: clamp(typeof value.timeoutMs === 'number' && Number.isFinite(value.timeoutMs) ? value.timeoutMs : defaults.timeoutMs, 5000, 120000),
-    batchSize: clamp(Math.round(typeof value.batchSize === 'number' && Number.isFinite(value.batchSize) ? value.batchSize : defaults.batchSize), 10, 200),
+    timeoutMs: clamp(legacyTimeout ? defaults.timeoutMs : (typeof value.timeoutMs === 'number' && Number.isFinite(value.timeoutMs) ? value.timeoutMs : defaults.timeoutMs), 5000, 120000),
+    batchTimeoutMs: clamp(typeof value.batchTimeoutMs === 'number' && Number.isFinite(value.batchTimeoutMs) ? value.batchTimeoutMs : defaults.batchTimeoutMs, 30000, 300000),
+    maxAttempts: clamp(Math.round(typeof value.maxAttempts === 'number' && Number.isFinite(value.maxAttempts) ? value.maxAttempts : defaults.maxAttempts), 1, 2),
+    batchSize: clamp(Math.round(legacyBatchSize ? defaults.batchSize : (typeof value.batchSize === 'number' && Number.isFinite(value.batchSize) ? value.batchSize : defaults.batchSize)), 10, 200),
     maxCategories: clamp(Math.round(typeof value.maxCategories === 'number' && Number.isFinite(value.maxCategories) ? value.maxCategories : defaults.maxCategories), 3, 50),
     enabled: value.enabled !== false,
   };
@@ -215,17 +256,27 @@ const fetchWithTimeout = async (
   init: RequestInit,
   timeoutMs: number,
   parentSignal?: AbortSignal,
+  deadlineAt?: number,
 ): Promise<Response> => {
+  const remaining = deadlineAt === undefined ? timeoutMs : Math.min(timeoutMs, deadlineAt - Date.now());
+  if (remaining <= 0) throw new AiServiceError('BATCH_TIMEOUT', 'AI 批次总超时');
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, remaining);
   const abortParent = () => controller.abort();
   parentSignal?.addEventListener('abort', abortParent, { once: true });
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (error) {
-    if (parentSignal?.aborted) throw new Error('AI 分类已取消');
-    if (error instanceof DOMException && error.name === 'AbortError') throw new Error('AI 请求超时');
-    throw new Error('AI 网络请求失败');
+    if (parentSignal?.aborted) throw new AiServiceError('CANCELLED', 'AI 分类已取消');
+    if (timedOut || (error instanceof DOMException && error.name === 'AbortError')) {
+      if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new AiServiceError('BATCH_TIMEOUT', 'AI 批次总超时', false);
+      throw new AiServiceError('TIMEOUT', 'AI 请求超时', true);
+    }
+    throw new AiServiceError('NETWORK', 'AI 网络请求失败', true);
   } finally {
     clearTimeout(timeout);
     parentSignal?.removeEventListener('abort', abortParent);
@@ -247,27 +298,44 @@ const requestJson = async (
   url: string,
   init: RequestInit,
   signal?: AbortSignal,
+  deadlineAt?: number,
 ): Promise<{ status: number; data: unknown }> => {
-  const response = await fetchWithTimeout(url, init, config.timeoutMs, signal);
+  const response = await fetchWithTimeout(url, init, config.timeoutMs, signal, deadlineAt);
   const data = await readJsonResponse(response);
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new Error('AI 认证失败，请检查 API Key 和认证方式');
-    if (response.status === 404) throw new Error('AI API 地址或模型不存在');
-    if (response.status === 429) throw new Error('AI 服务限流，请稍后重试');
-    if (response.status >= 500) throw new Error('AI 服务暂时不可用');
-    throw new Error('AI 服务请求失败（HTTP ' + response.status + '）');
+    if (response.status === 401 || response.status === 403) throw new AiServiceError('AUTH', 'AI 认证失败，请检查 API Key 和认证方式');
+    if (response.status === 404) throw new AiServiceError('NOT_FOUND', 'AI API 地址或模型不存在');
+    if (response.status === 429) throw new AiServiceError('RATE_LIMIT', 'AI 服务限流，请稍后重试', true);
+    if (response.status >= 500) throw new AiServiceError('SERVER', 'AI 服务暂时不可用', true);
+    if (response.status === 413) throw new AiServiceError('HTTP', 'AI 请求内容过大', false);
+    throw new AiServiceError('HTTP', 'AI 服务请求失败（HTTP ' + response.status + '）');
   }
   return { status: response.status, data };
 };
 
-const waitForRetry = async (delayMs: number, signal?: AbortSignal): Promise<void> => {
-  if (signal?.aborted) throw new Error('AI 分类已取消');
+const waitForRetry = async (delayMs: number, signal?: AbortSignal, deadlineAt?: number): Promise<void> => {
+  if (signal?.aborted) throw new AiServiceError('CANCELLED', 'AI 分类已取消');
+  if (deadlineAt !== undefined && Date.now() >= deadlineAt) throw new AiServiceError('BATCH_TIMEOUT', 'AI 批次总超时');
   await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(resolve, delayMs);
-    const abort = () => {
+    const remaining = deadlineAt === undefined ? delayMs : Math.min(delayMs, Math.max(0, deadlineAt - Date.now()));
+    if (remaining <= 0) {
+      reject(new AiServiceError('BATCH_TIMEOUT', 'AI 批次总超时'));
+      return;
+    }
+    let timeout: ReturnType<typeof setTimeout>;
+    const cleanup = () => {
       clearTimeout(timeout);
-      reject(new Error('AI 分类已取消'));
+      signal?.removeEventListener('abort', abort);
     };
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    const abort = () => {
+      cleanup();
+      reject(new AiServiceError('CANCELLED', 'AI 分类已取消'));
+    };
+    timeout = setTimeout(finish, remaining);
     signal?.addEventListener('abort', abort, { once: true });
   });
 };
@@ -277,21 +345,24 @@ const requestJsonWithRetry = async (
   url: string,
   init: RequestInit,
   signal?: AbortSignal,
+  deadlineAt?: number,
 ): Promise<{ status: number; data: unknown; attempts: number }> => {
   let attempts = 0;
-  while (attempts < 3) {
+  const maxAttempts = Math.max(1, Math.min(2, config.maxAttempts));
+  while (attempts < maxAttempts) {
     attempts += 1;
     try {
-      const result = await requestJson(config, url, init, signal);
+      const result = await requestJson(config, url, init, signal, deadlineAt);
       return { ...result, attempts };
     } catch (error) {
+      if (error instanceof AiServiceError) error.attempts = attempts;
       const message = error instanceof Error ? error.message : '';
-      const retryable = /限流|暂时不可用|网络请求失败|超时/.test(message);
-      if (!retryable || attempts >= 3 || signal?.aborted) throw error;
-      await waitForRetry(500 * attempts, signal);
+      const retryable = error instanceof AiServiceError ? error.retryable : /限流|暂时不可用|网络请求失败|超时/.test(message);
+      if (!retryable || attempts >= maxAttempts || signal?.aborted) throw error;
+      await waitForRetry(500 * attempts, signal, deadlineAt);
     }
   }
-  throw new Error('AI 请求失败');
+  throw new AiServiceError('NETWORK', 'AI 请求失败', true, attempts);
 };
 
 const extractText = (data: unknown): string => {
@@ -657,6 +728,7 @@ const requestClassificationBatch = async (
   config: AiProviderConfig,
   batch: AiBookmarkInput[],
   signal?: AbortSignal,
+  deadlineAt = Date.now() + config.batchTimeoutMs,
 ): Promise<{ response: AiClassificationResponse; attempts: number }> => {
   const endpoint = endpointForProtocol(config);
   const prompt = buildPrompt(config, batch);
@@ -666,14 +738,25 @@ const requestClassificationBatch = async (
       method: 'POST',
       headers: createHeaders(config),
       body: JSON.stringify(buildRequestBody(config, prompt, true)),
-    }, signal);
+    }, signal, deadlineAt);
   } catch (error) {
     if (!shouldFallbackStructuredOutput(config, error)) throw error;
-    result = await requestJsonWithRetry(config, endpoint, {
-      method: 'POST',
-      headers: createHeaders(config),
-      body: JSON.stringify(buildRequestBody(config, prompt, false)),
-    }, signal);
+    const structuredAttempts = error instanceof AiServiceError && typeof error.attempts === 'number'
+      ? error.attempts
+      : 1;
+    try {
+      const fallbackResult = await requestJsonWithRetry(config, endpoint, {
+        method: 'POST',
+        headers: createHeaders(config),
+        body: JSON.stringify(buildRequestBody(config, prompt, false)),
+      }, signal, deadlineAt);
+      result = { ...fallbackResult, attempts: structuredAttempts + fallbackResult.attempts };
+    } catch (fallbackError) {
+      if (fallbackError instanceof AiServiceError && typeof fallbackError.attempts === 'number') {
+        fallbackError.attempts += structuredAttempts;
+      }
+      throw fallbackError;
+    }
   }
 
   try {
@@ -685,16 +768,31 @@ const requestClassificationBatch = async (
   } catch (error) {
     if (!(error instanceof AiResponseFormatError)) throw error;
     const repairPrompt = buildRepairPrompt(config, batch);
-    const repairResult = await requestJsonWithRetry(config, endpoint, {
-      method: 'POST',
-      headers: createHeaders(config),
-      body: JSON.stringify(buildRequestBody(config, repairPrompt, false)),
-    }, signal);
-    const repaired = parseJsonObject(extractText(repairResult.data));
-    return {
-      response: normalizeResponse(repaired, batch, config.maxCategories),
-      attempts: result.attempts + repairResult.attempts,
-    };
+    let repairResult: { status: number; data: unknown; attempts: number };
+    try {
+      repairResult = await requestJsonWithRetry(config, endpoint, {
+        method: 'POST',
+        headers: createHeaders(config),
+        body: JSON.stringify(buildRequestBody(config, repairPrompt, false)),
+      }, signal, deadlineAt);
+    } catch (repairError) {
+      if (repairError instanceof AiServiceError && typeof repairError.attempts === 'number') {
+        repairError.attempts += result.attempts;
+      }
+      throw repairError;
+    }
+    try {
+      const repaired = parseJsonObject(extractText(repairResult.data));
+      return {
+        response: normalizeResponse(repaired, batch, config.maxCategories),
+        attempts: result.attempts + repairResult.attempts,
+      };
+    } catch (repairParseError) {
+      if (repairParseError instanceof AiResponseFormatError) {
+        repairParseError.attempts = result.attempts + repairResult.attempts;
+      }
+      throw repairParseError;
+    }
   }
 };
 
@@ -734,15 +832,30 @@ export async function classifyBookmarks(
     }
   };
 
+  const isAdaptiveSplitError = (error: unknown): boolean => {
+    if (!(error instanceof AiServiceError)) return false;
+    return error.code === 'TIMEOUT'
+      || error.code === 'BATCH_TIMEOUT'
+      || (error.code === 'HTTP' && error.message.includes('内容过大'));
+  };
+
+  const getAttempts = (error: unknown): number => {
+    if (error instanceof AiServiceError && typeof error.attempts === 'number') return error.attempts;
+    if (error instanceof AiResponseFormatError && typeof error.attempts === 'number') return error.attempts;
+    return 1;
+  };
+
   const classifyBatch = async (
     batch: AiBookmarkInput[],
     offset: number,
     splitDepth: number,
+    deadlineAt?: number,
   ): Promise<boolean> => {
     const batchId = getBatchId(offset, batch);
     if (completedBatchIds.has(batchId)) return false;
     if (batch.every(item => completedBookmarkIds.has(item.id))) return false;
-    if (signal?.aborted) throw new Error('AI 分类已取消');
+    if (signal?.aborted) throw new AiServiceError('CANCELLED', 'AI 分类已取消');
+    const batchDeadline = deadlineAt ?? Date.now() + config.batchTimeoutMs;
     // When a 20-item parent was already split and only one 10-item child
     // failed, resume the unfinished fixed-size child directly. This avoids
     // sending the completed child (or the entire parent) again.
@@ -760,7 +873,7 @@ export async function classifyBookmarks(
       for (let index = 0; index < batch.length; index += 10) {
         const child = batch.slice(index, index + 10);
         if (child.every(item => completedBookmarkIds.has(item.id))) continue;
-        await classifyBatch(child, offset + index, splitDepth + 1);
+        await classifyBatch(child, offset + index, splitDepth + 1, batchDeadline);
       }
       await options.onBatchProgress?.({ ...parentProgress, state: 'completed', completedAt: Date.now() });
       return true;
@@ -776,7 +889,7 @@ export async function classifyBookmarks(
     };
     await options.onBatchProgress?.(batchProgress);
     try {
-      const result = await requestClassificationBatch(config, batch, signal);
+      const result = await requestClassificationBatch(config, batch, signal, batchDeadline);
       mergeBatchResponse(result.response);
       await options.onBatchProgress?.({
         ...batchProgress,
@@ -786,25 +899,27 @@ export async function classifyBookmarks(
       }, result.response);
       return true;
     } catch (error) {
-      if (error instanceof AiResponseFormatError && splitDepth === 0 && batch.length > 10) {
+      if ((error instanceof AiResponseFormatError || isAdaptiveSplitError(error)) && splitDepth < 2 && batch.length > 10) {
         const chunks: AiBookmarkInput[][] = [];
-        for (let index = 0; index < batch.length; index += 10) chunks.push(batch.slice(index, index + 10));
+        const chunkSize = Math.max(10, Math.ceil(batch.length / 2));
+        for (let index = 0; index < batch.length; index += chunkSize) chunks.push(batch.slice(index, index + chunkSize));
         for (let index = 0; index < chunks.length; index += 1) {
-          await classifyBatch(chunks[index], offset + index * 10, splitDepth + 1);
+          await classifyBatch(chunks[index], offset + index * chunkSize, splitDepth + 1, batchDeadline);
         }
         await options.onBatchProgress?.({
           ...batchProgress,
           state: 'completed',
+          attempts: getAttempts(error),
           completedAt: Date.now(),
         });
         return true;
       }
-      const cancelled = signal?.aborted || (error instanceof Error && error.message.includes('取消'));
+      const cancelled = signal?.aborted || (error instanceof AiServiceError && error.code === 'CANCELLED') || (error instanceof Error && error.message.includes('取消'));
       await options.onBatchProgress?.({
         ...batchProgress,
         state: cancelled ? 'cancelled' : 'failed',
-        attempts: batchProgress.attempts + 1,
-        errorCode: error instanceof AiResponseFormatError ? error.code : undefined,
+        attempts: getAttempts(error),
+        errorCode: error instanceof AiResponseFormatError ? error.code : error instanceof AiServiceError ? error.code : undefined,
         error: error instanceof Error ? error.message.slice(0, 240) : 'AI 批次失败',
       });
       throw error;
