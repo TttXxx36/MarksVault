@@ -39,6 +39,17 @@ describe('bookmark backup schema v2', () => {
     expect(validateBookmarkBackupV2(migrated).valid).toBe(true);
   });
 
+  it('keeps a legacy shallow folder as a folder when children were not loaded', () => {
+    const backup = createBookmarkBackupV2([
+      { id: 'toolbar', title: 'Bookmarks Bar', isFolder: true, children: [
+        { id: 'shallow-folder', title: '学习', isFolder: true },
+      ] },
+    ]);
+    expect(backup.roots[0].children[0].children?.[0]).toMatchObject({ id: 'shallow-folder', type: 'folder' });
+    expect(backup.roots[0].children[0].children?.[0].children).toBeUndefined();
+    expect(validateBookmarkBackupV2(backup).valid).toBe(true);
+  });
+
   it('skips Firefox root________ synthetic container and preserves semantic children', () => {
     const backup = createBookmarkBackupV2([{
       id: 'root________', title: '', isFolder: true, type: 'folder', children: [
@@ -80,3 +91,4 @@ describe('bookmark backup schema v2', () => {
     expect(result.errors.join(' ')).toContain('节点数量超过上限');
   }, 20_000);
 });
+

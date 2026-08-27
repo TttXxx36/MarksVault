@@ -59,6 +59,9 @@ export type AiClassificationJobState =
   | 'classifying'
   | 'paused'
   | 'awaiting_review'
+  | 'applying'
+  | 'applied'
+  | 'rolled_back'
   | 'failed'
   | 'cancelled';
 
@@ -83,6 +86,8 @@ export interface AiClassificationJob {
   updatedAt: number;
   endpoint: string;
   model: string;
+  /** Classification preview/plan associated with this job, when available. */
+  planId?: string;
   bookmarkIds: string[];
   bookmarks: AiBookmarkInput[];
   batches: AiBatchProgress[];
@@ -113,7 +118,10 @@ export interface AiClassificationPlan {
   appliedBookmarkIds: string[];
   appliedDestinationByBookmarkId: Record<string, string>;
   createdFolderIds: string[];
+  /** Creation provenance used to safely remove empty AI-owned folders on restore. */
+  createdFolderMetadata?: Record<string, { parentId?: string; title: string }>;
   /** Local v2.1 snapshot created and validated immediately before writes. */
   preSnapshotId?: string;
   state: 'preview' | 'applying' | 'applied' | 'rolled_back';
 }
+

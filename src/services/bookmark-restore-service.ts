@@ -103,10 +103,66 @@ const getNodeById = async (id: string): Promise<RestoreBookmarkNode | null> => {
     index: node.index,
     title: node.title || '',
     ...(node.url ? { url: node.url } : {}),
-    type: (node as unknown as { type?: 'bookmark' | 'folder' | 'separator' }).type || (node.url ? 'bookmark' : Array.isArray(node.children) ? 'folder' : 'separator'),
+    // get() may return a shallow folder without `children`; only an explicit
+    // separator type is non-navigable.
+    type: (node as unknown as { type?: 'bookmark' | 'folder' | 'separator' }).type || (node.url ? 'bookmark' : 'folder'),
     ...((node as unknown as { unmodifiable?: string }).unmodifiable ? { unmodifiable: (node as unknown as { unmodifiable?: string }).unmodifiable } : {}),
     path: '',
   };
+};
+
+type AiFolderProvenance = { parentId?: string; title?: string };
+
+/**
+ * Resolve the narrow exception to the normal "never delete additions" rule:
+ * an AI-before snapshot may own folders that the same AI plan created. Only
+ * folders still present in the preview tree are considered, and the metadata
+ * is carried forward so a later user rename/move prevents deletion.
+ */
+const getAiCleanupFolders = async (
+  snapshot: BookmarkSnapshot,
+  currentNodes: RestoreBookmarkNode[],
+): Promise<{ ids: string[]; metadata: Record<string, AiFolderProvenance> }> => {
+  if (snapshot.source !== 'ai-classification-before' || !snapshot.planId) {
+    return { ids: [], metadata: {} };
+  }
+  const stored = await browser.storage.local.get('ai_last_classification_plan') as Record<string, unknown>;
+  const rawPlan = stored.ai_last_classification_plan;
+  if (!rawPlan || typeof rawPlan !== 'object') return { ids: [], metadata: {} };
+  const plan = rawPlan as {
+    id?: unknown;
+    preSnapshotId?: unknown;
+    createdFolderIds?: unknown;
+    createdFolderMetadata?: unknown;
+  };
+  if (plan.id !== snapshot.planId) return { ids: [], metadata: {} };
+  if (typeof plan.preSnapshotId === 'string' && plan.preSnapshotId !== snapshot.snapshotId) {
+    return { ids: [], metadata: {} };
+  }
+  const metadataInput = plan.createdFolderMetadata && typeof plan.createdFolderMetadata === 'object'
+    ? plan.createdFolderMetadata as Record<string, unknown>
+    : {};
+  const ids: string[] = [];
+  const metadata: Record<string, AiFolderProvenance> = {};
+  for (const value of Array.isArray(plan.createdFolderIds) ? plan.createdFolderIds : []) {
+    if (typeof value !== 'string' || ids.includes(value)) continue;
+    const current = currentNodes.find(node => node.id === value);
+    if (!current || current.type !== 'folder' || current.unmodifiable) continue;
+    const rawMetadata = metadataInput[value];
+    // Plans created before provenance metadata was introduced are readable,
+    // but cannot safely claim ownership of a folder. Do not fall back to the
+    // current title/parent: doing so would make a user rename or move look
+    // like an unchanged AI folder and could delete it during restore.
+    if (!rawMetadata || typeof rawMetadata !== 'object') continue;
+    const entry = rawMetadata as { parentId?: unknown; title?: unknown };
+    if (typeof entry.parentId !== 'string' || typeof entry.title !== 'string') continue;
+    ids.push(value);
+    metadata[value] = {
+      parentId: entry.parentId,
+      title: entry.title,
+    };
+  }
+  return { ids, metadata };
 };
 
 const isSameUrl = (a?: string, b?: string): boolean => (a || '') === (b || '');
@@ -356,6 +412,7 @@ export const createRestorePlan = async (
   const safeChangeIds = options?.safeChangeIds
     ?? (snapshot.source === 'ai-classification-before' ? snapshot.affectedBookmarkIds : undefined);
   const diff = calculateSnapshotDiff(snapshot, currentNodes, { ...options, safeChangeIds });
+  const aiCleanup = await getAiCleanupFolders(snapshot, currentNodes);
   const planId = createId('restore-plan');
   const journalId = createId('restore-journal');
   const selectedItemIds = options?.selectedItemIds
@@ -381,7 +438,21 @@ export const createRestorePlan = async (
     journalId,
     state: 'preview',
     safeChangeIds,
+    cleanupFolderIds: aiCleanup.ids,
+    cleanupFolderMetadata: aiCleanup.metadata,
   };
+  const cleanupJournalItems: RestoreJournalItem[] = aiCleanup.ids.map(folderId => {
+    const current = currentNodes.find(node => node.id === folderId);
+    return {
+      itemId: `cleanup-folder:${folderId}`,
+      bookmarkId: folderId,
+      state: 'pending',
+      operation: 'delete',
+      beforeParentId: current?.parentId,
+      beforeIndex: current?.index,
+      beforeTitle: current?.title,
+    };
+  });
   const journal: RestoreJournal = {
     schemaVersion: SNAPSHOT_SCHEMA_VERSION,
     journalId,
@@ -398,12 +469,17 @@ export const createRestorePlan = async (
     isAutomatic: plan.isAutomatic,
     isProtected: plan.isProtected,
     state: 'preview',
-    items: diff.items.map(item => ({
-      itemId: item.id,
-      bookmarkId: item.snapshotNode?.id || item.currentNode?.id,
-      state: selectedItemIds.includes(item.id) && item.action === 'restore' ? 'pending' : 'skipped',
-      error: item.reason,
-    })),
+    cleanupFolderIds: aiCleanup.ids,
+    cleanupFolderMetadata: aiCleanup.metadata,
+    items: [
+      ...diff.items.map<RestoreJournalItem>(item => ({
+        itemId: item.id,
+        bookmarkId: item.snapshotNode?.id || item.currentNode?.id,
+        state: selectedItemIds.includes(item.id) && item.action === 'restore' ? 'pending' : 'skipped',
+        error: item.reason,
+      })),
+      ...cleanupJournalItems,
+    ],
   };
   await repository.putPlan(plan);
   await repository.putJournal(journal);
@@ -453,6 +529,55 @@ const updateJournalItem = async (repository: SnapshotRepository, plan: RestorePl
 const shouldCancel = async (options: ApplyRestorePlanOptions): Promise<boolean> => {
   if (options.signal?.aborted) return true;
   return options.cancelRequested ? Boolean(await options.cancelRequested()) : false;
+};
+
+const cleanupAiFoldersAfterRestore = async (
+  repository: SnapshotRepository,
+  plan: RestorePlan,
+  journal: RestoreJournal,
+): Promise<void> => {
+  // An explicit restore with no selected node is a no-op. This avoids a
+  // forged/empty runtime request deleting a folder on its own.
+  if (!plan.selectedItemIds.length || !plan.cleanupFolderIds?.length) return;
+
+  for (const folderId of plan.cleanupFolderIds) {
+    const itemId = `cleanup-folder:${folderId}`;
+    const journalItem = journal.items.find(item => item.itemId === itemId);
+    if (!journalItem || journalItem.state === 'completed' || journalItem.state === 'skipped' || journalItem.state === 'rolled_back') continue;
+    await updateJournalItem(repository, plan, journal, itemId, { state: 'running', startedAt: Date.now() });
+    try {
+      const current = await getNodeById(folderId);
+      if (!current) {
+        await updateJournalItem(repository, plan, journal, itemId, { state: 'skipped', completedAt: Date.now(), error: 'AI 创建的文件夹已不存在' });
+        continue;
+      }
+      if (current.type !== 'folder' || current.unmodifiable) {
+        await updateJournalItem(repository, plan, journal, itemId, { state: 'skipped', completedAt: Date.now(), error: '文件夹已被替换或受保护' });
+        continue;
+      }
+      const children = await browser.bookmarks.getChildren(folderId) as unknown as Array<{ id: string }>;
+      if (children.length > 0) {
+        await updateJournalItem(repository, plan, journal, itemId, { state: 'skipped', completedAt: Date.now(), error: '文件夹已包含书签，保留用户内容' });
+        continue;
+      }
+      const expected = plan.cleanupFolderMetadata?.[folderId];
+      if (expected && ((expected.parentId !== undefined && current.parentId !== expected.parentId)
+        || (expected.title !== undefined && current.title !== expected.title))) {
+        await updateJournalItem(repository, plan, journal, itemId, { state: 'skipped', completedAt: Date.now(), error: '文件夹已被用户移动或重命名，保留用户修改' });
+        continue;
+      }
+      await browser.bookmarks.removeTree(folderId);
+      await updateJournalItem(repository, plan, journal, itemId, {
+        state: 'completed', completedAt: Date.now(), operation: 'delete',
+        bookmarkId: folderId, beforeParentId: current.parentId, beforeIndex: current.index, beforeTitle: current.title,
+      });
+    } catch (error) {
+      await updateJournalItem(repository, plan, journal, itemId, {
+        state: 'uncertain', completedAt: Date.now(), error: error instanceof Error ? error.message : String(error),
+      });
+      throw new RestoreUncertainError(`清理 AI 空文件夹 ${folderId} 时写入结果不确定`);
+    }
+  }
 };
 
 export const applyRestorePlan = async (
@@ -636,6 +761,7 @@ export const applyRestorePlan = async (
           throw new RestoreUncertainError(`恢复节点 ${item.id} 时写入结果不确定`);
         }
       }
+      await cleanupAiFoldersAfterRestore(repository, plan, journal);
       plan = { ...plan, state: 'applied' };
       journal = { ...journal, state: 'applied' };
       await savePlanAndJournal(repository, plan, journal);
@@ -752,3 +878,4 @@ export const markRestoreJournalsRecoverable = async (repository?: SnapshotReposi
 
 export const getRestorePlan = async (planId: string, repository?: SnapshotRepository): Promise<RestorePlan | null> =>
   (repository || getSnapshotRepository()).getPlan(planId);
+

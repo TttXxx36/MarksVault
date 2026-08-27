@@ -198,6 +198,14 @@ export interface RestorePlan {
   journalId?: string;
   state: RestorePlanState;
   safeChangeIds?: string[];
+  /**
+   * Empty folders created by the matching AI classification may be cleaned up
+   * during an explicit restore. Provenance and current emptiness are checked
+   * again immediately before deletion; ordinary post-snapshot additions are
+   * never included here.
+   */
+  cleanupFolderIds?: string[];
+  cleanupFolderMetadata?: Record<string, { parentId?: string; title?: string }>;
 }
 
 export type RestoreJournalItemState = 'pending' | 'running' | 'completed' | 'skipped' | 'failed' | 'uncertain' | 'rolled_back';
@@ -241,6 +249,8 @@ export interface RestoreJournal {
   semanticRootMap?: Record<string, string>;
   /** Folders created as unknown-root fallbacks; kept for audit and idempotent resume. */
   createdRootFolderIds?: string[];
+  cleanupFolderIds?: string[];
+  cleanupFolderMetadata?: Record<string, { parentId?: string; title?: string }>;
   error?: string;
   browserRestartRecovered?: boolean;
 }
@@ -256,3 +266,4 @@ export interface SnapshotImportValidationResult {
   contentHash?: string;
   computedHash?: string;
 }
+

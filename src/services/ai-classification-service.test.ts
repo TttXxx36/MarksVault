@@ -239,6 +239,64 @@ describe('ai-classification rollback safety', () => {
     expect(completed?.state).toBe('awaiting_review');
   });
 
+  test('moves the persisted AI task out of preview-waiting after confirmation', async () => {
+    const repository = new MemorySnapshotRepository();
+    bookmarks.getTree = jest.fn().mockResolvedValue([{
+      id: 'root',
+      title: '',
+      children: [{
+        id: 'toolbar',
+        title: 'Bookmarks Toolbar',
+        children: [{ id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', index: 0 }],
+      }],
+    }]);
+    bookmarks.getChildren = jest.fn().mockResolvedValue([]);
+    bookmarks.get = jest.fn().mockResolvedValue([
+      { id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', index: 0 },
+    ]);
+    bookmarks.create = jest.fn().mockResolvedValue({ id: 'ai-folder', parentId: 'toolbar', title: '开发', children: [] });
+    bookmarks.move = jest.fn().mockResolvedValue({ id: 'b1', parentId: 'ai-folder', title: 'Example', url: 'https://example.test', index: 0 });
+
+    await saveAiClassificationJob({
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'job-applied-state',
+      planId: 'plan-applied-state',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.test',
+      model: 'fixture-model',
+      bookmarkIds: ['b1'],
+      bookmarks: [{ id: 'b1', title: 'Example', url: 'https://example.test', path: 'Bookmarks Toolbar' }],
+      batches: [{ batchId: 'batch-1', bookmarkIds: ['b1'], state: 'completed', attempts: 1 }],
+      categories: [{ name: '开发' }],
+      assignments: [{ bookmarkId: 'b1', categoryName: '开发', confidence: 1 }],
+      state: 'awaiting_review',
+    } as any);
+
+    const plan: AiClassificationPlan = {
+      id: 'plan-applied-state',
+      createdAt: Date.now(),
+      categories: [{ name: '开发' }],
+      assignments: [{ bookmarkId: 'b1', categoryName: '开发', confidence: 1 }],
+      snapshot: [{ id: 'b1', parentId: 'toolbar', index: 0 }],
+      skippedBookmarkIds: [],
+      unassignedBookmarkIds: [],
+      appliedBookmarkIds: [],
+      appliedDestinationByBookmarkId: {},
+      createdFolderIds: [],
+      state: 'preview',
+    };
+
+    setSnapshotRepositoryForTesting(repository);
+    await applyAiClassificationPlan(plan);
+
+    await expect(getAiClassificationJob()).resolves.toEqual(expect.objectContaining({
+      state: 'applied',
+      planId: 'plan-applied-state',
+    }));
+  });
+
   test('marks an interrupted classifying job as resumable instead of restarting it silently', async () => {
     const job: any = {
       schemaVersion: 1,
@@ -319,3 +377,4 @@ describe('ai-classification rollback safety', () => {
     await expect(runAiClassificationJob()).rejects.toThrow('没有可执行的 AI 分类任务');
   });
 });
+

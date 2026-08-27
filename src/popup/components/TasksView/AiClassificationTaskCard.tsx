@@ -12,6 +12,21 @@ import Chip from '@mui/material/Chip';
 import { AiClassificationJob } from '../../../types/ai';
 import { getAiClassificationJob } from '../../../services/ai-classification-service';
 
+export const getAiClassificationJobStatusLabel = (state: AiClassificationJob['state']): string => {
+  switch (state) {
+    case 'awaiting_review': return '已完成，等待预览确认';
+    case 'applying': return '正在应用分类';
+    case 'applied': return '已完成';
+    case 'rolled_back': return '已撤销';
+    case 'classifying':
+    case 'queued': return '后台处理中';
+    case 'paused': return '可恢复';
+    case 'failed': return '有失败批次';
+    case 'cancelled': return '已取消';
+    default: return '未知状态';
+  }
+};
+
 const AiClassificationTaskCard: React.FC = () => {
   const [job, setJob] = useState<AiClassificationJob | null>(null);
   const [clock, setClock] = useState(() => Date.now());
@@ -78,7 +93,7 @@ const AiClassificationTaskCard: React.FC = () => {
         <Stack spacing={1}>
           <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
             <Typography variant="subtitle1">AI 分类任务</Typography>
-            <Chip size="small" label={job.state === 'awaiting_review' ? '等待预览确认' : job.state === 'classifying' || job.state === 'queued' ? '后台处理中' : job.state === 'paused' ? '可恢复' : job.state === 'failed' ? '有失败批次' : '已取消'} />
+            <Chip size="small" label={getAiClassificationJobStatusLabel(job.state)} />
           </Box>
           <LinearProgress variant="determinate" value={progress} />
           <Typography variant="caption" color="text.secondary">
@@ -100,3 +115,4 @@ const AiClassificationTaskCard: React.FC = () => {
 };
 
 export default AiClassificationTaskCard;
+

@@ -242,6 +242,9 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
             <Alert severity={plan.diff.conflictCount ? 'warning' : 'info'} sx={{ mb: 1 }}>
               新增 {plan.diff.addedCount} · 删除 {plan.diff.deletedCount} · 移动 {plan.diff.movedCount} · 重命名 {plan.diff.renamedCount} · 冲突 {plan.diff.conflictCount} · 跳过 {plan.diff.skippedCount}
             </Alert>
+            {plan.cleanupFolderIds?.length ? <Alert severity="info" sx={{ mb: 1 }}>
+              本次恢复还会尝试清理 {plan.cleanupFolderIds.length} 个本次 AI 创建的空文件夹；仅当文件夹仍为空且未被移动或重命名时才会删除。其他新增内容不会被删除。
+            </Alert> : null}
             <DialogContentText>默认跳过快照之后被修改、已删除或无法安全匹配的节点，不删除快照之后新增书签，不修改 URL。确认后会先创建“恢复前”快照。</DialogContentText>
             {plan.state === 'uncertain' && <Alert severity="error" sx={{ mt: 1 }}>上次恢复结果不确定，请先检查恢复日志，再明确选择继续或回滚。</Alert>}
             <Divider sx={{ my: 1 }} />
@@ -282,3 +285,4 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
 };
 
 export default SnapshotHistoryCard;
+

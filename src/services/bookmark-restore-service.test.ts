@@ -105,6 +105,161 @@ describe('bookmark restore safety', () => {
     expect((await repository.listJournals()).some(journal => journal.state === 'uncertain')).toBe(true);
   });
 
+  it('removes only empty folders created by the matching AI plan when restoring its before snapshot', async () => {
+    const repository = new MemorySnapshotRepository();
+    const tree: any[] = [{
+      id: '0', title: '', children: [{
+        id: 'toolbar', title: 'Bookmarks Toolbar', children: [
+          { id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', index: 0 },
+          { id: 'user-empty', parentId: 'toolbar', title: '用户保留空文件夹', children: [], index: 1 },
+        ],
+      }, {
+        id: 'ai-folder', parentId: 'toolbar', title: '开发', children: [], index: 2,
+      }],
+    }];
+    const find = (items: any[], id: string): any => {
+      for (const item of items) {
+        if (item.id === id) return item;
+        const nested = find(item.children || [], id);
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+    const removeFromTree = (items: any[], id: string): boolean => {
+      for (const item of items) {
+        const children = item.children || [];
+        const index = children.findIndex((child: any) => child.id === id);
+        if (index >= 0) {
+          children.splice(index, 1);
+          return true;
+        }
+        if (removeFromTree(children, id)) return true;
+      }
+      return false;
+    };
+    browser.bookmarks.getTree = jest.fn().mockResolvedValue(tree);
+    browser.bookmarks.get = jest.fn().mockImplementation(async (id: string) => {
+      const node = find(tree, id);
+      return node ? [node] : [];
+    });
+    browser.bookmarks.move = jest.fn().mockImplementation(async (id: string, destination: { parentId: string; index?: number }) => {
+      const node = find(tree, id);
+      if (!node) return {};
+      removeFromTree(tree, id);
+      const parent = find(tree, destination.parentId);
+      node.parentId = destination.parentId;
+      parent.children.splice(destination.index ?? parent.children.length, 0, node);
+      return node;
+    });
+    browser.bookmarks.removeTree = jest.fn().mockImplementation(async (id: string) => {
+      removeFromTree(tree, id);
+    });
+
+    const snapshot = await createBookmarkSnapshot({
+      repository,
+      source: 'ai-classification-before',
+      planId: 'ai-plan-1',
+      affectedBookmarkIds: ['b1'],
+      nodes: [
+        { id: '0', title: '', type: 'folder', path: '' },
+        { id: 'toolbar', parentId: '0', title: 'Bookmarks Toolbar', type: 'folder', path: '' },
+        { id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', type: 'bookmark', path: 'Bookmarks Toolbar', index: 0 },
+      ],
+    });
+    await browser.storage.local.set({
+      ai_last_classification_plan: {
+        id: 'ai-plan-1',
+        preSnapshotId: snapshot.snapshotId,
+        createdFolderIds: ['ai-folder'],
+        createdFolderMetadata: { 'ai-folder': { parentId: 'toolbar', title: '开发' } },
+        state: 'applied',
+      },
+    });
+
+    const plan = await createRestorePlan(snapshot.snapshotId, {
+      repository,
+      currentNodes: [
+        { id: '0', title: '', type: 'folder', path: '' },
+        { id: 'toolbar', parentId: '0', title: 'Bookmarks Toolbar', type: 'folder', path: '' },
+        { id: 'b1', parentId: 'ai-folder', title: 'Example', url: 'https://example.test', type: 'bookmark', path: '开发', index: 0 },
+        { id: 'ai-folder', parentId: 'toolbar', title: '开发', type: 'folder', path: 'Bookmarks Toolbar', index: 1 },
+        { id: 'user-empty', parentId: 'toolbar', title: '用户保留空文件夹', type: 'folder', path: 'Bookmarks Toolbar', index: 2 },
+      ],
+    });
+
+    const result = await applyRestorePlan(plan, { repository });
+
+    expect(result.state).toBe('applied');
+    expect(browser.bookmarks.removeTree).toHaveBeenCalledWith('ai-folder');
+    expect(browser.bookmarks.removeTree).not.toHaveBeenCalledWith('user-empty');
+    expect(find(tree, 'ai-folder')).toBeUndefined();
+    expect(find(tree, 'user-empty')).toBeTruthy();
+  });
+
+  it('preserves an AI folder that the user renamed after classification', async () => {
+    const repository = new MemorySnapshotRepository();
+    const tree: any[] = [{
+      id: '0', title: '', children: [{
+        id: 'toolbar', title: 'Bookmarks Toolbar', children: [
+          { id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', index: 0 },
+          { id: 'ai-folder', parentId: 'toolbar', title: '我改过的名称', children: [], index: 1 },
+        ],
+      }],
+    }];
+    const find = (items: any[], id: string): any => {
+      for (const item of items) {
+        if (item.id === id) return item;
+        const nested = find(item.children || [], id);
+        if (nested) return nested;
+      }
+      return undefined;
+    };
+    browser.bookmarks.getTree = jest.fn().mockResolvedValue(tree);
+    browser.bookmarks.get = jest.fn().mockImplementation(async (id: string) => {
+      const node = find(tree, id);
+      return node ? [node] : [];
+    });
+    browser.bookmarks.getChildren = jest.fn().mockImplementation(async (id: string) => find(tree, id)?.children || []);
+    browser.bookmarks.move = jest.fn().mockResolvedValue({});
+    browser.bookmarks.removeTree = jest.fn().mockResolvedValue(undefined);
+
+    const snapshot = await createBookmarkSnapshot({
+      repository,
+      source: 'ai-classification-before',
+      planId: 'ai-plan-renamed',
+      affectedBookmarkIds: ['b1'],
+      nodes: [
+        { id: '0', title: '', type: 'folder', path: '' },
+        { id: 'toolbar', parentId: '0', title: 'Bookmarks Toolbar', type: 'folder', path: '' },
+        { id: 'b1', parentId: 'toolbar', title: 'Example', url: 'https://example.test', type: 'bookmark', path: 'Bookmarks Toolbar', index: 0 },
+      ],
+    });
+    await browser.storage.local.set({
+      ai_last_classification_plan: {
+        id: 'ai-plan-renamed',
+        preSnapshotId: snapshot.snapshotId,
+        createdFolderIds: ['ai-folder'],
+        createdFolderMetadata: { 'ai-folder': { parentId: 'toolbar', title: '开发' } },
+        state: 'applied',
+      },
+    });
+
+    const plan = await createRestorePlan(snapshot.snapshotId, {
+      repository,
+      currentNodes: [
+        { id: '0', title: '', type: 'folder', path: '' },
+        { id: 'toolbar', parentId: '0', title: 'Bookmarks Toolbar', type: 'folder', path: '' },
+        { id: 'b1', parentId: 'ai-folder', title: 'Example', url: 'https://example.test', type: 'bookmark', path: '我改过的名称', index: 0 },
+        { id: 'ai-folder', parentId: 'toolbar', title: '我改过的名称', type: 'folder', path: 'Bookmarks Toolbar', index: 1 },
+      ],
+    });
+
+    await applyRestorePlan(plan, { repository });
+
+    expect(browser.bookmarks.removeTree).not.toHaveBeenCalledWith('ai-folder');
+    expect(find(tree, 'ai-folder')).toMatchObject({ title: '我改过的名称' });
+  });
+
   it('marks an interrupted journal uncertain after restart without moving bookmarks', async () => {
     const repository = new MemorySnapshotRepository();
     let moveCalled = false;
@@ -271,3 +426,4 @@ describe('bookmark restore safety', () => {
     expect(journal?.items.find(item => item.itemId === 'foreign-bookmark')?.error).toContain('不唯一');
   });
 });
+

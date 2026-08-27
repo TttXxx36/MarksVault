@@ -36,7 +36,9 @@ const createId = (): string => {
 const getNodeType = (node: NativeBookmarkNode): 'bookmark' | 'folder' | 'separator' => {
   if (node.type === 'bookmark' || node.type === 'folder' || node.type === 'separator') return node.type;
   if (node.url) return 'bookmark';
-  return Array.isArray(node.children) ? 'folder' : 'separator';
+  // Shallow Chrome/Edge getChildren() results omit `children` for folders;
+  // only an explicit separator type may be treated as a separator.
+  return 'folder';
 };
 
 const isFolder = (node: NativeBookmarkNode): boolean => getNodeType(node) === 'folder';
@@ -230,8 +232,9 @@ export async function createAiClassificationJob(configInput?: AiProviderConfig):
 const buildPlanFromJob = async (job: AiClassificationJob): Promise<AiClassificationPlan> => {
   const assignedIds = new Set(job.assignments.map(item => item.bookmarkId));
   const snapshot = job.bookmarks.map(item => ({ id: item.id, parentId: item.parentId, index: item.index }));
+  const planId = createId();
   const plan: AiClassificationPlan = {
-    id: createId(),
+    id: planId,
     createdAt: Date.now(),
     categories: job.categories,
     assignments: job.assignments,
@@ -243,8 +246,33 @@ const buildPlanFromJob = async (job: AiClassificationJob): Promise<AiClassificat
     createdFolderIds: [],
     state: 'preview',
   };
+  // Link the persisted task to its preview so confirmation can converge the
+  // task state even when the Popup was reopened.
+  await saveAiClassificationJob({ ...job, planId, updatedAt: Date.now() });
   await browser.storage.local.set({ [PLAN_KEY]: plan });
   return plan;
+};
+
+const updateAiClassificationJobState = async (
+  planId: string,
+  state: AiClassificationJob['state'],
+): Promise<void> => {
+  const job = await getAiClassificationJob();
+  if (!job) return;
+  // Legacy plans did not persist planId. In that case only the sole
+  // preview-waiting job is eligible; never overwrite an unrelated task.
+  if (job.planId && job.planId !== planId) return;
+  if (!job.planId && !['awaiting_review', 'applying'].includes(job.state)) return;
+  await saveAiClassificationJob({
+    ...job,
+    planId: job.planId || planId,
+    state,
+    resumeAvailable: false,
+    cancelRequested: false,
+    updatedAt: Date.now(),
+    error: undefined,
+    errorCode: undefined,
+  });
 };
 
 export async function runAiClassificationJob(jobInput?: AiClassificationJob): Promise<AiClassificationJob> {
@@ -337,7 +365,8 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
       };
       await saveAiClassificationJob(job);
       await clearAiClassificationAlarm(job.id);
-      await buildPlanFromJob(job);
+      const plan = await buildPlanFromJob(job);
+      job = { ...job, planId: plan.id };
       return job;
       } catch (error) {
       const cancelled = activeAiController?.signal.aborted || (error instanceof Error && error.message.includes('取消'));
@@ -516,9 +545,11 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan, opti
     appliedBookmarkIds: [],
     appliedDestinationByBookmarkId: {},
     createdFolderIds: [],
+    createdFolderMetadata: {},
   };
   // 先落盘状态，再执行任何创建/移动；Service Worker 中断后仍可继续撤销。
   await browser.storage.local.set({ [PLAN_KEY]: applied });
+  await updateAiClassificationJobState(plan.id, 'applying');
 
   const folderMap = new Map<string, string>();
   try {
@@ -526,7 +557,14 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan, opti
       const folder = await getCategoryFolder(root.id, category.name);
       folderMap.set(category.name.toLocaleLowerCase(), folder.id);
       if (folder.created) {
-        applied = { ...applied, createdFolderIds: [...applied.createdFolderIds, folder.id] };
+        applied = {
+          ...applied,
+          createdFolderIds: [...applied.createdFolderIds, folder.id],
+          createdFolderMetadata: {
+            ...(applied.createdFolderMetadata || {}),
+            [folder.id]: { parentId: root.id, title: category.name },
+          },
+        };
         await browser.storage.local.set({ [PLAN_KEY]: applied });
       }
     }
@@ -564,6 +602,7 @@ export async function applyAiClassificationPlan(plan: AiClassificationPlan, opti
   }
   applied = { ...applied, state: 'applied' };
   await browser.storage.local.set({ [PLAN_KEY]: applied });
+  await updateAiClassificationJobState(plan.id, 'applied');
   return applied;
 }
 
@@ -588,6 +627,12 @@ export async function rollbackAiClassificationPlan(planInput?: AiClassificationP
   }
   for (const folderId of plan.createdFolderIds || []) {
     try {
+      const current = await browser.bookmarks.get(folderId) as NativeBookmarkNode[];
+      const node = current[0];
+      if (!node || !isFolder(node) || node.unmodifiable) continue;
+      const expected = plan.createdFolderMetadata?.[folderId];
+      if (expected && ((expected.parentId !== undefined && node.parentId !== expected.parentId)
+        || (expected.title !== undefined && node.title !== expected.title))) continue;
       const children = await browser.bookmarks.getChildren(folderId) as NativeBookmarkNode[];
       if (children.length === 0) await browser.bookmarks.remove(folderId);
     } catch {
@@ -596,6 +641,7 @@ export async function rollbackAiClassificationPlan(planInput?: AiClassificationP
   }
   const rolledBack: AiClassificationPlan = { ...plan, state: 'rolled_back' };
   await browser.storage.local.set({ [PLAN_KEY]: rolledBack });
+  await updateAiClassificationJobState(plan.id, 'rolled_back');
   return rolledBack;
 }
 
@@ -665,3 +711,4 @@ export async function saveAiClassificationJob(job: AiClassificationJob): Promise
   }
   await browser.storage.local.set({ [JOB_KEY]: job });
 }
+

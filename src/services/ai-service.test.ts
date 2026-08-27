@@ -150,6 +150,43 @@ describe('ai-service user-configured provider', () => {
     expect(body.text.format).toEqual({ type: 'json_object' });
   });
 
+  test('guides diverse bookmarks into meaningful domain categories before using other', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxCategories: 12,
+    };
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        output_text: JSON.stringify({
+          categories: [{ name: '开发' }, { name: '学习' }],
+          assignments: [
+            { bookmarkId: 'b1', categoryName: '开发', confidence: 0.9 },
+            { bookmarkId: 'b2', categoryName: '学习', confidence: 0.9 },
+          ],
+        }),
+      }),
+    });
+
+    await classifyBookmarks(config, [
+      { id: 'b1', title: 'TypeScript 文档', url: 'https://www.typescriptlang.org/docs', path: '书签栏 / 开发' },
+      { id: 'b2', title: '在线课程', url: 'https://learn.example.test/course', path: '书签栏 / 学习' },
+    ]);
+
+    const [, request] = (globalThis as any).fetch.mock.calls[0];
+    const body = JSON.parse(String(request.body));
+    const systemPrompt = body.input[0].content as string;
+    const userPrompt = body.input[1].content as string;
+    expect(systemPrompt).toContain('优先依据域名、URL 路径、标题和文件夹路径');
+    expect(systemPrompt).toContain('“其他”仅用于确实无法判断');
+    expect(userPrompt).toContain('不要把所有书签默认归入“其他”');
+    expect(userPrompt).toContain('域名');
+  });
+
   test('repairs one invalid response without restarting the batch', async () => {
     const config = {
       ...createDefaultAiProviderConfig(),
@@ -579,3 +616,4 @@ describe('ai-service user-configured provider', () => {
   });
 
 });
+

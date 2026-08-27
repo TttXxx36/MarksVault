@@ -21,7 +21,7 @@ import { applyAiClassificationPlan, getAiClassificationJob, getLastAiClassificat
 import { getAiProviderConfig } from '../../../services/ai-service';
 
 const isBackgroundJobState = (state: AiClassificationJob['state']): boolean => {
-  return state === 'queued' || state === 'classifying' || state === 'paused' || state === 'failed' || state === 'cancelled';
+  return state === 'queued' || state === 'classifying' || state === 'paused' || state === 'applying' || state === 'failed' || state === 'cancelled';
 };
 
 const AiClassifyButton: React.FC = () => {
@@ -224,7 +224,17 @@ const AiClassifyButton: React.FC = () => {
           {job && !plan && (
             <Stack spacing={1.25}>
               <Typography variant="body2">
-                AI 分类任务：{job.state === 'classifying' || job.state === 'queued' ? '后台处理中' : job.state === 'paused' ? '等待继续' : job.state === 'failed' ? '存在失败批次' : '已取消'}
+                AI 分类任务：{job.state === 'classifying' || job.state === 'queued'
+                  ? '后台处理中'
+                  : job.state === 'applying'
+                    ? '正在应用分类'
+                    : job.state === 'paused'
+                      ? '等待继续'
+                      : job.state === 'failed'
+                        ? '存在失败批次'
+                        : job.state === 'cancelled'
+                          ? '已取消'
+                          : '已完成'}
               </Typography>
               <LinearProgress variant="determinate" value={progressValue} />
               <Typography variant="caption" color="text.secondary">
@@ -297,3 +307,4 @@ const AiClassifyButton: React.FC = () => {
 };
 
 export default AiClassifyButton;
+

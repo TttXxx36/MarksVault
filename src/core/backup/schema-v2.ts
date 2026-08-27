@@ -26,6 +26,10 @@ const SAFE_PROTOCOLS = new Set([
 const nodeType = (item: BookmarkItem): BookmarkNodeV2['type'] => {
   if (item.type === 'bookmark' || item.type === 'folder' || item.type === 'separator') return item.type;
   if (item.url) return 'bookmark';
+  // Legacy v1 callers may provide a shallow folder with `isFolder: true` but
+  // without a children array. Preserve that explicit semantic flag instead of
+  // turning it into a separator merely because the node was not expanded.
+  if (item.isFolder) return 'folder';
   return item.children ? 'folder' : 'separator';
 };
 
@@ -254,3 +258,4 @@ export const backupV2ToSnapshotTree = (backup: BookmarkBackupV2): BackupV2Snapsh
   }
   return { nodes, roots };
 };
+

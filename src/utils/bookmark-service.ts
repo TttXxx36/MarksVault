@@ -27,9 +27,12 @@ export const getBookmarkNodeType = (node: Browser.bookmarks.BookmarkTreeNode): B
   const nativeType = (node as unknown as { type?: string }).type;
   if (nativeType === 'bookmark' || nativeType === 'folder' || nativeType === 'separator') return nativeType;
   if (node.url) return 'bookmark';
-  // Folder nodes expose a children array, including when empty. A URL-less
-  // node without children is the Firefox separator shape.
-  return Array.isArray(node.children) ? 'folder' : 'separator';
+  // Chrome/Edge omit `children` on folder nodes returned by getChildren(),
+  // get(), and some change events. A URL-less native bookmark node is
+  // therefore a folder unless the browser explicitly identifies it as a
+  // separator above. This keeps shallow folder reads navigable while still
+  // preserving explicit Firefox/custom separator nodes.
+  return 'folder';
 };
 
 // 书签操作结果类型
@@ -630,3 +633,4 @@ class BookmarkService {
 
 // 导出书签服务单例
 export default new BookmarkService(); 
+

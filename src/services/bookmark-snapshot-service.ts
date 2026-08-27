@@ -451,7 +451,9 @@ export const validateSnapshot = async (candidate: unknown): Promise<SnapshotImpo
 const getNativeNodeType = (node: BookmarkTreeNode): BookmarkSnapshotNode['type'] => {
   if (node.type === 'bookmark' || node.type === 'folder' || node.type === 'separator') return node.type;
   if (node.url) return 'bookmark';
-  return Array.isArray(node.children) ? 'folder' : 'separator';
+  // Shallow browser bookmark nodes can omit `children`; URL-less native
+  // nodes are folders unless the browser explicitly marks a separator.
+  return 'folder';
 };
 
 const inferRootRole = (node: Pick<BookmarkTreeNode, 'id' | 'title'>): BookmarkRootRole => {
@@ -829,3 +831,4 @@ export const readLegacyAiClassificationPlan = async (): Promise<Record<string, u
 };
 
 export const readLegacyAiLastClassificationPlan = readLegacyAiClassificationPlan;
+
