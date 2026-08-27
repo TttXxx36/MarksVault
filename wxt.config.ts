@@ -30,15 +30,29 @@ export default defineConfig({
   srcDir: 'src',
   modules: ['@wxt-dev/module-react'],
   vite: (env) => {
+    // Extension service workers do not have a DOM. Vite's module-preload
+    // polyfill touches `document` at module evaluation time, which makes an
+    // MV3 worker fail registration when a shared UI chunk is loaded. Extension
+    // pages do not need this browser-page polyfill because WXT emits the
+    // dependency graph directly into the extension package.
+    const serviceWorkerSafeBuild = {
+      build: {
+        modulePreload: {
+          polyfill: false,
+        },
+      },
+    };
+
     // 仅开发模式调整依赖预构建（optimizeDeps）。
     //
     // 背景：在 `wxt` dev（Vite dev server）下，Vite 的 deps optimizer 可能会对
     // `@mui/material` 生成错误的预构建产物，导致运行时出现：
     // `Uncaught TypeError: createTheme_default is not a function`，进而使 popup 白屏。
     // 生产构建（wxt build/zip）不受影响，因此这里只对 `serve` 做 workaround。
-    if (env.command !== 'serve') return {};
+    if (env.command !== 'serve') return serviceWorkerSafeBuild;
 
     return {
+      ...serviceWorkerSafeBuild,
       resolve: {
         alias: [
           // 强制把 @mui/system 的深路径导入指向 ESM 版本，避免 dev 下把 CJS 当 ESM 加载导致的
@@ -72,7 +86,7 @@ export default defineConfig({
       name: 'MarksVault',
       description: '智能管理、整理和安全备份您的书签数据',
       // Firefox 不支持 Chromium 的 `_favicon` 端点，也不需要 `favicon` 权限，避免 AMO 审核噪音
-      permissions: ['bookmarks', 'storage', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
+      permissions: ['bookmarks', 'storage', 'alarms', ...(isFirefox ? [] : ['favicon', 'tabs', 'windows'])],
       host_permissions: ['https://api.github.com/*'],
       // AI 供应商地址按运行时 origin 精确申请，不作为安装必需权限。
       // 只声明运行时需要的可选来源：HTTPS 任意 origin，以及本机 HTTP 服务。

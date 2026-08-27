@@ -15,6 +15,9 @@ const firefox = readManifest('firefox-mv2');
 
 for (const [name, manifest] of [['chrome', chrome], ['edge', edge]]) {
   if (manifest.manifest_version !== 3) throw new Error(`${name} 必须使用 Manifest V3`);
+  if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes('alarms')) {
+    throw new Error(`${name} 缺少后台任务恢复所需的 alarms 权限`);
+  }
   if (!Array.isArray(manifest.optional_host_permissions) || !manifest.optional_host_permissions.includes('https://*/*')) {
     throw new Error(`${name} 缺少 AI 运行时可选 HTTPS origin 权限`);
   }
@@ -29,6 +32,9 @@ for (const [name, manifest] of [['chrome', chrome], ['edge', edge]]) {
 }
 
 if (firefox.manifest_version !== 2) throw new Error('Firefox v2 必须保持 Manifest V2 兼容基线');
+if (!Array.isArray(firefox.permissions) || !firefox.permissions.includes('alarms')) {
+  throw new Error('Firefox 缺少后台任务恢复所需的 alarms 权限');
+}
 if (firefox.browser_specific_settings?.gecko?.id !== 'marksvault@tttxxx36.github.io') {
   throw new Error('Firefox 缺少稳定 Gecko Add-on ID');
 }

@@ -1,11 +1,12 @@
 import { browser } from 'wxt/browser';
 import { AiClassificationPlan } from '../types/ai';
-import { applyAiClassificationPlan, rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
+import { applyAiClassificationPlan, clearAiClassificationAlarm, ensureAiClassificationAlarm, recoverAiClassificationOnWorkerStart, rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
 import { createDefaultAiProviderConfig, saveAiProviderConfig } from './ai-service';
 import { MemorySnapshotRepository, setSnapshotRepositoryForTesting } from './bookmark-snapshot-service';
 
 describe('ai-classification rollback safety', () => {
   const bookmarks = browser.bookmarks as any;
+  const alarms = browser.alarms as any;
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -16,7 +17,132 @@ describe('ai-classification rollback safety', () => {
     bookmarks.move = jest.fn();
     bookmarks.create = jest.fn().mockResolvedValue({ id: 'ai-folder', title: '其他' });
     bookmarks.update = jest.fn();
+    alarms.get = jest.fn().mockResolvedValue(undefined);
+    alarms.create = jest.fn().mockResolvedValue(undefined);
+    alarms.clear = jest.fn().mockResolvedValue(true);
     setSnapshotRepositoryForTesting(null);
+  });
+
+  test('starts a job with a one-shot watchdog alarm', async () => {
+    const job = {
+      id: 'alarm-job',
+      state: 'queued' as const,
+    };
+
+    await expect(ensureAiClassificationAlarm(job)).resolves.toBe(true);
+    expect(alarms.create).toHaveBeenCalledWith(
+      'marksvault-ai-alarm-job',
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+
+    alarms.get.mockResolvedValueOnce({ name: 'marksvault-ai-alarm-job' });
+    await expect(ensureAiClassificationAlarm(job)).resolves.toBe(true);
+    expect(alarms.create).toHaveBeenCalledTimes(1);
+
+    await expect(clearAiClassificationAlarm(job.id)).resolves.toBe(true);
+    expect(alarms.clear).toHaveBeenCalledWith('marksvault-ai-alarm-job');
+  });
+
+  test('recreates a missing alarm for a queued job after worker restart', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'job-alarm-lost',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'queued',
+    };
+    await saveAiClassificationJob(job);
+
+    const recovered = await recoverAiClassificationOnWorkerStart();
+
+    expect(recovered?.state).toBe('queued');
+    expect(alarms.create).toHaveBeenCalledWith(
+      'marksvault-ai-job-alarm-lost',
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+  });
+
+  test('marks an interrupted classifying job resumable when its alarm is missing', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'job-worker-restart',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'classifying',
+    };
+    await saveAiClassificationJob(job);
+
+    const recovered = await recoverAiClassificationOnWorkerStart();
+
+    expect(recovered?.state).toBe('paused');
+    expect(recovered?.resumeAvailable).toBe(true);
+    expect(alarms.clear).toHaveBeenCalledWith('marksvault-ai-job-worker-restart');
+  });
+
+  test('browser restart also pauses a queued job instead of auto-sending it', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'job-browser-restart-queued',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'queued',
+    };
+    await saveAiClassificationJob(job);
+
+    const recovered = await markAiClassificationRecoverable();
+
+    expect(recovered?.state).toBe('paused');
+    expect(recovered?.resumeAvailable).toBe(true);
+    expect(alarms.clear).toHaveBeenCalledWith('marksvault-ai-job-browser-restart-queued');
+  });
+
+  test('keeps a classifying job active when the worker was woken by its alarm', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'job-alarm-wake',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'classifying',
+    };
+    await saveAiClassificationJob(job);
+    alarms.get.mockResolvedValue({ name: 'marksvault-ai-job-alarm-wake' });
+
+    const recovered = await recoverAiClassificationOnWorkerStart();
+
+    expect(recovered?.state).toBe('classifying');
+    expect(alarms.clear).not.toHaveBeenCalled();
   });
 
   test('refuses every bookmark write when the mandatory AI-before snapshot cannot be stored', async () => {
@@ -173,7 +299,16 @@ describe('ai-classification rollback safety', () => {
     const checkpoint = await getAiClassificationJob();
     expect(checkpoint?.state).toBe('queued');
     expect(checkpoint?.batches.filter(batch => batch.state === 'completed')).toHaveLength(1);
-    await runAiClassificationJob(checkpoint || undefined);
+    // Simulate the worker being reclaimed after the first checkpoint and the
+    // one-shot alarm being lost. A new worker repairs the alarm before resume.
+    alarms.get.mockResolvedValue(undefined);
+    const recovered = await recoverAiClassificationOnWorkerStart();
+    expect(recovered?.state).toBe('queued');
+    expect(alarms.create).toHaveBeenCalledWith(
+      expect.stringMatching(/^marksvault-ai-/),
+      expect.objectContaining({ when: expect.any(Number) }),
+    );
+    await runAiClassificationJob(recovered || undefined);
     const completed = await getAiClassificationJob();
     expect(completed?.state).toBe('awaiting_review');
     expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);

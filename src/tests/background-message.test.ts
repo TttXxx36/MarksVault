@@ -60,9 +60,11 @@ jest.mock('../services/trigger-service', () => ({
 
 jest.mock('../services/ai-classification-service', () => ({
   cancelAiClassificationJob: jest.fn(),
+  ensureAiClassificationAlarm: jest.fn().mockResolvedValue(true),
   getAiClassificationJob: jest.fn(),
   getLastAiClassificationPlan: jest.fn(),
   markAiClassificationRecoverable: jest.fn(),
+  recoverAiClassificationOnWorkerStart: jest.fn().mockResolvedValue(null),
   resumeAiClassificationJob: jest.fn(),
   runAiClassificationJob: jest.fn(),
   startAiClassificationJob: jest.fn(),

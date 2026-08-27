@@ -114,6 +114,78 @@ const createPendingBatches = (bookmarks: AiBookmarkInput[], batchSize: number) =
 
 const activeJobStates = new Set(['queued', 'classifying', 'paused', 'failed']);
 
+/**
+ * A one-shot alarm keeps a long classification job resumable when an MV3
+ * worker is reclaimed while an AI request is in flight. The alarm is renewed
+ * at every checkpoint and by the alarm handler itself; it is never used to
+ * write bookmarks without an explicit preview confirmation.
+ */
+export const AI_CLASSIFICATION_ALARM_PREFIX = 'marksvault-ai-';
+export const AI_CLASSIFICATION_ALARM_DELAY_MS = 30_000;
+
+type AiAlarmApi = {
+  create?: (name: string, details: { when: number }) => Promise<void> | void;
+  get?: (name: string) => Promise<unknown>;
+  clear?: (name: string) => Promise<boolean> | boolean;
+};
+
+const getAiAlarmApi = (): AiAlarmApi | undefined => (
+  (browser as unknown as { alarms?: AiAlarmApi }).alarms
+);
+
+const getAiAlarmName = (jobId: string): string => `${AI_CLASSIFICATION_ALARM_PREFIX}${jobId}`;
+
+const isAlarmManagedJob = (job: Pick<AiClassificationJob, 'state'>): boolean => (
+  job.state === 'queued' || job.state === 'classifying'
+);
+
+const getExistingAiAlarm = async (jobId: string): Promise<boolean | null> => {
+  const alarmsApi = getAiAlarmApi();
+  if (!alarmsApi?.get) return null;
+  try {
+    return Boolean(await alarmsApi.get(getAiAlarmName(jobId)));
+  } catch (error) {
+    // A failed read should not prevent a best-effort recreation. Returning
+    // null lets the caller call create() without treating the alarm as known
+    // to exist.
+    console.warn('[AI classification alarm] 读取闹钟状态失败，将尝试恢复:', error);
+    return null;
+  }
+};
+
+/** Ensure an active AI job has a one-shot wake-up alarm. */
+export async function ensureAiClassificationAlarm(
+  job: Pick<AiClassificationJob, 'id' | 'state'>,
+): Promise<boolean> {
+  if (!isAlarmManagedJob(job)) return false;
+  const alarmsApi = getAiAlarmApi();
+  if (!alarmsApi?.create) return false;
+
+  const alarmName = getAiAlarmName(job.id);
+  const existing = await getExistingAiAlarm(job.id);
+  if (existing === true) return true;
+
+  try {
+    await alarmsApi.create(alarmName, { when: Date.now() + AI_CLASSIFICATION_ALARM_DELAY_MS });
+    return true;
+  } catch (error) {
+    console.error('[AI classification alarm] 创建/恢复闹钟失败:', error);
+    return false;
+  }
+}
+
+/** Remove a terminal job's watchdog alarm without failing the job cleanup. */
+export async function clearAiClassificationAlarm(jobId: string): Promise<boolean> {
+  const alarmsApi = getAiAlarmApi();
+  if (!alarmsApi?.clear) return false;
+  try {
+    return Boolean(await alarmsApi.clear(getAiAlarmName(jobId)));
+  } catch (error) {
+    console.warn('[AI classification alarm] 清理闹钟失败:', error);
+    return false;
+  }
+}
+
 export async function createAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
   const config = configInput || await getAiProviderConfig();
   const bookmarks = await collectAiBookmarks();
@@ -127,7 +199,13 @@ export async function createAiClassificationJob(configInput?: AiProviderConfig):
     && storedJob.bookmarkIds.length === bookmarkIds.length
     && storedJob.bookmarkIds.every((id, index) => id === bookmarkIds[index]),
   );
-  if (canReuse && storedJob) return storedJob;
+  if (canReuse && storedJob) {
+    // A worker can be re-created after the previous one had already persisted
+    // the job but before its alarm was created. Repair that gap before handing
+    // the existing job back to the caller.
+    await ensureAiClassificationAlarm(storedJob);
+    return storedJob;
+  }
   const job: AiClassificationJob = {
     schemaVersion: 1,
     promptContractVersion: AI_PROMPT_CONTRACT_VERSION,
@@ -145,6 +223,7 @@ export async function createAiClassificationJob(configInput?: AiProviderConfig):
     resumeAvailable: false,
   };
   await saveAiClassificationJob(job);
+  await ensureAiClassificationAlarm(job);
   return job;
 }
 
@@ -175,6 +254,9 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
       const initialJob = jobInput || await getAiClassificationJob();
       if (!initialJob) throw new Error('没有可执行的 AI 分类任务');
       if (activeAiCancelRequested || initialJob.cancelRequested || initialJob.state === 'cancelled') return initialJob;
+      if (!await ensureAiClassificationAlarm(initialJob)) {
+        throw new Error('后台闹钟不可用，无法保证 AI 分类任务可恢复');
+      }
       let job: AiClassificationJob = initialJob;
       const config = await getAiProviderConfig();
       if (config.endpoint !== job.endpoint || config.model !== job.model) {
@@ -210,9 +292,13 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
           updatedAt: Date.now(),
         };
         await saveAiClassificationJob(job);
-        const alarmsApi = (browser as unknown as { alarms?: { create?: (name: string, details: { when: number }) => Promise<void> | void } }).alarms;
-        if (progress.state === 'completed' && alarmsApi?.create) {
-          void alarmsApi.create(`marksvault-ai-${job.id}`, { when: Date.now() + 1000 });
+        // Renew the one-shot watchdog at every persisted checkpoint. If the
+        // worker is reclaimed before the next network response, the alarm can
+        // wake a fresh worker and continue from the completed-batch set.
+        if (progress.state === 'running' || progress.state === 'completed') {
+          if (!await ensureAiClassificationAlarm(job)) {
+            throw new Error('后台闹钟不可用，无法继续 AI 分类任务');
+          }
         }
       },
       };
@@ -233,6 +319,9 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
           updatedAt: Date.now(),
         };
         await saveAiClassificationJob(job);
+        if (!await ensureAiClassificationAlarm(job)) {
+          throw new Error('后台闹钟不可用，无法继续 AI 分类任务');
+        }
         return job;
       }
       job = {
@@ -247,6 +336,7 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         errorCode: undefined,
       };
       await saveAiClassificationJob(job);
+      await clearAiClassificationAlarm(job.id);
       await buildPlanFromJob(job);
       return job;
       } catch (error) {
@@ -260,6 +350,7 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : undefined,
       };
       await saveAiClassificationJob(job);
+      await clearAiClassificationAlarm(job.id);
         throw error;
       }
     } finally {
@@ -272,7 +363,35 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
 }
 
 export async function startAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
-  const job = await createAiClassificationJob(configInput);
+  const existingJob = await createAiClassificationJob(configInput);
+  // START is an explicit user action. Preserve completed checkpoints when a
+  // previous attempt failed, but put that job back into the queued state before
+  // arming the watchdog. Paused jobs remain user-controlled and must use the
+  // dedicated RESUME command instead.
+  const job = existingJob.state === 'failed'
+    ? {
+        ...existingJob,
+        state: 'queued' as const,
+        resumeAvailable: true,
+        cancelRequested: false,
+        error: undefined,
+        errorCode: undefined,
+        updatedAt: Date.now(),
+      }
+    : existingJob;
+  if (job !== existingJob) await saveAiClassificationJob(job);
+  if (!await ensureAiClassificationAlarm(job)) {
+    const paused: AiClassificationJob = {
+      ...job,
+      state: 'paused',
+      resumeAvailable: true,
+      updatedAt: Date.now(),
+      error: '后台闹钟不可用，任务已暂停，请检查扩展权限后重试',
+      errorCode: 'ALARM_UNAVAILABLE',
+    };
+    await saveAiClassificationJob(paused);
+    throw new Error(paused.error);
+  }
   void runAiClassificationJob(job).catch(() => undefined);
   return job;
 }
@@ -283,6 +402,9 @@ export async function resumeAiClassificationJob(): Promise<AiClassificationJob> 
   if (!activeJobStates.has(job.state) && job.state !== 'cancelled') throw new Error('当前 AI 分类任务不可恢复');
   const queued = { ...job, state: 'queued' as const, resumeAvailable: true, cancelRequested: false, updatedAt: Date.now() };
   await saveAiClassificationJob(queued);
+  if (!await ensureAiClassificationAlarm(queued)) {
+    throw new Error('后台闹钟不可用，无法恢复 AI 分类任务');
+  }
   void runAiClassificationJob(queued).catch(() => undefined);
   return queued;
 }
@@ -299,12 +421,16 @@ export async function cancelAiClassificationJob(): Promise<AiClassificationJob |
   }
   const cancelled = { ...job, state: 'cancelled' as const, cancelRequested: true, resumeAvailable: true, updatedAt: Date.now() };
   await saveAiClassificationJob(cancelled);
+  await clearAiClassificationAlarm(cancelled.id);
   return cancelled;
 }
 
 export async function markAiClassificationRecoverable(): Promise<AiClassificationJob | null> {
   const job = await getAiClassificationJob();
-  if (!job || job.state !== 'classifying') return job;
+  // Both an in-flight request and a queued-but-not-started request must stop
+  // after a browser restart. The former may have an unknown network outcome;
+  // the latter must not silently start sending data in the background.
+  if (!job || (job.state !== 'classifying' && job.state !== 'queued')) return job;
   const paused: AiClassificationJob = {
     ...job,
     state: 'paused',
@@ -313,7 +439,34 @@ export async function markAiClassificationRecoverable(): Promise<AiClassificatio
     error: '后台服务已重新初始化，任务可以继续',
   };
   await saveAiClassificationJob(paused);
+  await clearAiClassificationAlarm(paused.id);
   return paused;
+}
+
+/**
+ * Reconcile a persisted job when a new Service Worker instance starts.
+ *
+ * A queued job always gets its alarm repaired. A classifying job is kept
+ * running only when its watchdog alarm still exists (typically an alarm wake
+ * event); if the alarm is missing, the in-flight request cannot be trusted
+ * after worker reclamation, so the job becomes explicitly resumable instead
+ * of being retried silently.
+ */
+export async function recoverAiClassificationOnWorkerStart(): Promise<AiClassificationJob | null> {
+  const job = await getAiClassificationJob();
+  if (!job) return null;
+
+  if (job.state === 'queued') {
+    await ensureAiClassificationAlarm(job);
+    return job;
+  }
+
+  if (job.state !== 'classifying') return job;
+
+  const alarmPresence = await getExistingAiAlarm(job.id);
+  if (alarmPresence === true) return job;
+
+  return markAiClassificationRecoverable();
 }
 
 export async function createAiClassificationPlan(configInput?: AiProviderConfig): Promise<AiClassificationPlan> {

@@ -46,6 +46,12 @@ jobs:
       - name: Verify Manifest Contracts
         run: npm run verify:manifests
 
+      - name: Verify Service Worker DOM Safety
+        run: |
+          npm run verify:service-worker -- chrome
+          npm run verify:service-worker -- edge
+          npm run verify:service-worker -- firefox
+
       - name: Firefox AMO Lint
         run: npm run lint:firefox
 

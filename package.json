@@ -1,6 +1,6 @@
 {
   "name": "marksvault",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "智能管理、整理和安全备份您的书签数据",
   "author": "TttXxx36",
   "repository": {
@@ -27,6 +27,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"wxt.config.ts\"",
     "verify:manifests": "node scripts/verify-manifests.mjs",
+    "verify:service-worker": "node --experimental-vm-modules scripts/verify-service-worker-dom.mjs",
     "lint:firefox": "npx --yes web-ext@8 lint --source-dir .output/firefox-mv2",
     "test": "jest"
   },

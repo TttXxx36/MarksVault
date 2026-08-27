@@ -9,9 +9,11 @@ import triggerService from '../services/trigger-service';
 import { warmupBookmarkFavicons } from '../services/favicon-warmup-service';
 import {
   cancelAiClassificationJob,
+  ensureAiClassificationAlarm,
   getAiClassificationJob,
   getLastAiClassificationPlan,
   markAiClassificationRecoverable,
+  recoverAiClassificationOnWorkerStart,
   resumeAiClassificationJob,
   runAiClassificationJob,
   startAiClassificationJob,
@@ -110,13 +112,26 @@ export default defineBackground({
       if (!alarm.name.startsWith('marksvault-ai-')) return;
       void getAiClassificationJob()
         .then(job => {
-          if (job && (job.state === 'queued' || job.state === 'classifying' || job.state === 'paused')) {
-            return runAiClassificationJob(job);
+          if (job && (job.state === 'queued' || job.state === 'classifying')) {
+            // A one-shot alarm is consumed when it fires. Re-create the next
+            // watchdog before attempting the checkpointed batch so a worker
+            // reclaimed again does not lose the wake-up path.
+            return ensureAiClassificationAlarm(job).then(ready => {
+              if (!ready) throw new Error('后台闹钟不可用，无法恢复 AI 分类任务');
+              return runAiClassificationJob(job);
+            });
           }
           return undefined;
         })
         .catch(error => console.error('[AI classification alarm] 任务恢复失败:', error));
     });
+
+    // Reconcile persisted AI work for every new worker instance. This is
+    // intentionally separate from runtime.onStartup: an MV3 worker can be
+    // reclaimed while the browser remains open, and onStartup will not fire
+    // in that case. No bookmark write is performed here.
+    void recoverAiClassificationOnWorkerStart()
+      .catch(error => console.error('[AI classification worker start] 状态恢复失败:', error));
 
     // 监听安装事件
     browser.runtime.onInstalled.addListener(async (details) => {
@@ -237,7 +252,7 @@ export default defineBackground({
 
       if (message.type === 'GET_AI_CLASSIFICATION_JOB') {
         // Reading task state must be side-effect free. Recovery is performed
-        // only during browser startup, not when a Popup is reopened.
+        // during worker/browser startup, not when a Popup is reopened.
         void (async () => ({ success: true, job: await getAiClassificationJob() }))()
           .then(response => sendResponse(response))
           .catch(respondError);

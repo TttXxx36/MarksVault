@@ -1753,6 +1753,7 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 12. `release: prepare v2.1.0`
 13. `release: prepare v2.1.1`（GitHub schema v2 迁移、统一恢复、错误元数据和安全诊断，详见 §18.6）
 14. `release: prepare v2.1.2`（AI 延迟预算、有限重试、自适应拆分、IndexedDB 进度心跳和 100+ 合成书签基准，详见 §18.7）
+15. `release: prepare v2.1.3`（AI 后台闹钟、Worker 回收恢复和长任务故障注入，详见 §18.8）
 
 任何切片都不得同时修改 GitHub 备份核心、Firefox manifest 和 AI 恢复核心，除非任务依赖明确记录在提交说明中。
 
@@ -1829,5 +1830,28 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 - 既有 v2.1.1 测试全部通过，并新增默认迁移、超时预算、有限重试、自适应拆分、进度次数和 100 条合成书签测试。
 - 必须通过 Jest、TypeScript、ESLint、Chrome/Firefox/Edge 构建、Manifest 校验、Firefox `web-ext lint` 和 SHA256 校验。
 - 真实接口测试完成后，只发布脱敏的耗时摘要；生产 Release 不包含 API Key、真实书签或真实响应正文。
+
+### 18.8 v2.1.3：AI 后台闹钟与 Service Worker 恢复
+
+本节记录 v2.1.2 之后的维护增量，专门收敛后台 AI 分类在 Worker 回收、闹钟丢失和浏览器重启时的状态边界。
+
+#### 18.8.1 闹钟生命周期
+
+- AI 分类任务创建/启动、恢复和每个已落盘批次检查点都必须确保存在 one-shot 闹钟。
+- 闹钟事件先恢复下一次看门狗，再从已完成批次检查点继续；同一 Worker 内的活动执行使用单任务锁，不能重复请求。
+- 任务进入 `awaiting_review`、`failed` 或 `cancelled` 后清理闹钟；闹钟失败不得触发书签写入。
+
+#### 18.8.2 Worker/浏览器重启语义
+
+- 新 Worker 实例先读取持久化任务和闹钟状态，不读取或保存 API Key 到任务记录。
+- `classifying` 任务若仍有闹钟，视为可由闹钟唤醒的活动任务；闹钟丢失时转为 `paused`/`resumeAvailable`，等待用户明确继续。
+- 浏览器 `onStartup` 将 `queued` 和 `classifying` 任务转为可恢复状态并清理闹钟，禁止浏览器重启后自动再次调用外部 AI。
+- 任意恢复路径不得调用 `browser.bookmarks.move`；分类计划仍须经过预览确认。
+
+#### 18.8.3 故障注入与发布门槛
+
+- 测试必须覆盖 Worker 回收、闹钟丢失、闹钟唤醒、长任务检查点、浏览器重启、重复闹钟和非 AI 闹钟隔离。
+- 断点恢复只跳过已完成批次；恢复测试验证不会重复发送已完成批次，也不会自动写入书签。
+- v2.1.3 必须通过 Jest、TypeScript、ESLint、Chrome/Firefox/Edge 构建、Manifest 校验、Service Worker 无 DOM 启动检查和 Firefox lint（环境可用时）。
 
 
