@@ -258,4 +258,3 @@ export const backupV2ToSnapshotTree = (backup: BookmarkBackupV2): BackupV2Snapsh
   }
   return { nodes, roots };
 };
-

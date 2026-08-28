@@ -91,4 +91,3 @@ describe('bookmark backup schema v2', () => {
     expect(result.errors.join(' ')).toContain('节点数量超过上限');
   }, 20_000);
 });
-

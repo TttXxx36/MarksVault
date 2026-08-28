@@ -146,6 +146,21 @@ describe('background runtime.onMessage', () => {
     expect(sendResponse).toHaveBeenCalledWith({ success: true, job });
   });
 
+  test('START_NEW_AI_CLASSIFICATION 通过 forceNew 创建新任务', async () => {
+    const job = { id: 'job-new', state: 'queued' } as any;
+    mockedStartAi.mockResolvedValue(job);
+
+    (background as any).main();
+    const listener = onMessageListener;
+    if (!listener) throw new Error('runtime.onMessage listener 未注册');
+    const sendResponse = jest.fn();
+    expect(listener({ type: 'START_NEW_AI_CLASSIFICATION' }, null, sendResponse)).toBe(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    expect(mockedStartAi).toHaveBeenCalledWith(undefined, { forceNew: true });
+    expect(sendResponse).toHaveBeenCalledWith({ success: true, job });
+  });
+
   test('重新打开 Popup 只读取任务，不会把正在运行的任务暂停', async () => {
     const job = { id: 'job-running', state: 'classifying' } as any;
     mockedGetAi.mockResolvedValue(job);

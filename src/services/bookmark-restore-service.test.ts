@@ -426,4 +426,3 @@ describe('bookmark restore safety', () => {
     expect(journal?.items.find(item => item.itemId === 'foreign-bookmark')?.error).toContain('不唯一');
   });
 });
-

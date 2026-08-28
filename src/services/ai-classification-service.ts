@@ -115,6 +115,7 @@ const createPendingBatches = (bookmarks: AiBookmarkInput[], batchSize: number) =
 };
 
 const activeJobStates = new Set(['queued', 'classifying', 'paused', 'failed']);
+const nonReplaceableJobStates = new Set(['queued', 'classifying', 'paused', 'awaiting_review', 'applying']);
 
 /**
  * A one-shot alarm keeps a long classification job resumable when an MV3
@@ -188,13 +189,28 @@ export async function clearAiClassificationAlarm(jobId: string): Promise<boolean
   }
 }
 
-export async function createAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
+export interface StartAiClassificationOptions {
+  /** Start a new task after the user explicitly cancelled/abandoned a prior task. */
+  forceNew?: boolean;
+}
+
+export async function createAiClassificationJob(
+  configInput?: AiProviderConfig,
+  options: StartAiClassificationOptions = {},
+): Promise<AiClassificationJob> {
   const config = configInput || await getAiProviderConfig();
   const bookmarks = await collectAiBookmarks();
   const bookmarkIds = bookmarks.map(item => item.id);
   const storedJob = await getAiClassificationJob();
+  if (options.forceNew && activeAiRun) {
+    throw new Error('已有 AI 分类任务正在运行，请先取消并等待其状态变为已取消');
+  }
+  if (options.forceNew && storedJob && nonReplaceableJobStates.has(storedJob.state)) {
+    throw new Error('已有未完成的 AI 分类任务，请先继续或取消该任务');
+  }
   const canReuse = Boolean(
-    storedJob
+    !options.forceNew
+    && storedJob
     && activeJobStates.has(storedJob.state)
     && storedJob.endpoint === config.endpoint
     && storedJob.model === config.model
@@ -272,6 +288,7 @@ const updateAiClassificationJobState = async (
     updatedAt: Date.now(),
     error: undefined,
     errorCode: undefined,
+    errorDiagnostics: undefined,
   });
 };
 
@@ -291,7 +308,16 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         throw new Error('AI 配置已变化，请重新生成分类任务');
       }
       activeAiController = new AbortController();
-      job = { ...job, state: 'classifying', cancelRequested: false, resumeAvailable: false, error: undefined, errorCode: undefined, updatedAt: Date.now() };
+      job = {
+        ...job,
+        state: 'classifying',
+        cancelRequested: false,
+        resumeAvailable: false,
+        error: undefined,
+        errorCode: undefined,
+        errorDiagnostics: undefined,
+        updatedAt: Date.now(),
+      };
       await saveAiClassificationJob(job);
       if (activeAiCancelRequested) throw new Error('AI 分类已取消');
       const options: AiClassificationOptions = {
@@ -313,9 +339,14 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         job = {
           ...job,
           batches,
-          activeBatchId: progress.state === 'running' ? progress.batchId : job.activeBatchId,
+          activeBatchId: progress.state === 'running'
+            ? progress.batchId
+            : progress.state === 'split' && job.activeBatchId === progress.batchId
+              ? undefined
+              : job.activeBatchId,
           categories: response ? mergeCategories(job.categories, response) : job.categories,
           assignments: response ? mergeAssignments(job.assignments, response.assignments) : job.assignments,
+          errorDiagnostics: progress.diagnostics || job.errorDiagnostics,
           cancelRequested: activeAiCancelRequested || job.cancelRequested,
           updatedAt: Date.now(),
         };
@@ -362,6 +393,7 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         resumeAvailable: false,
         error: undefined,
         errorCode: undefined,
+        errorDiagnostics: undefined,
       };
       await saveAiClassificationJob(job);
       await clearAiClassificationAlarm(job.id);
@@ -377,6 +409,7 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
         updatedAt: Date.now(),
         error: error instanceof Error ? error.message : 'AI 分类任务失败',
         errorCode: typeof (error as { code?: unknown })?.code === 'string' ? (error as { code: string }).code : undefined,
+        errorDiagnostics: (error as { diagnostics?: unknown })?.diagnostics as AiClassificationJob['errorDiagnostics'],
       };
       await saveAiClassificationJob(job);
       await clearAiClassificationAlarm(job.id);
@@ -391,8 +424,12 @@ export async function runAiClassificationJob(jobInput?: AiClassificationJob): Pr
   return activeAiRun;
 }
 
-export async function startAiClassificationJob(configInput?: AiProviderConfig): Promise<AiClassificationJob> {
-  const existingJob = await createAiClassificationJob(configInput);
+export async function startAiClassificationJob(
+  configInput?: AiProviderConfig,
+  options: StartAiClassificationOptions = {},
+): Promise<AiClassificationJob> {
+  const existingJob = await createAiClassificationJob(configInput, options);
+  if (options.forceNew) await browser.storage.local.remove([PLAN_KEY]);
   // START is an explicit user action. Preserve completed checkpoints when a
   // previous attempt failed, but put that job back into the queued state before
   // arming the watchdog. Paused jobs remain user-controlled and must use the
@@ -405,6 +442,7 @@ export async function startAiClassificationJob(configInput?: AiProviderConfig): 
         cancelRequested: false,
         error: undefined,
         errorCode: undefined,
+        errorDiagnostics: undefined,
         updatedAt: Date.now(),
       }
     : existingJob;
@@ -429,7 +467,16 @@ export async function resumeAiClassificationJob(): Promise<AiClassificationJob> 
   const job = await getAiClassificationJob();
   if (!job) throw new Error('没有可恢复的 AI 分类任务');
   if (!activeJobStates.has(job.state) && job.state !== 'cancelled') throw new Error('当前 AI 分类任务不可恢复');
-  const queued = { ...job, state: 'queued' as const, resumeAvailable: true, cancelRequested: false, updatedAt: Date.now() };
+  const queued = {
+    ...job,
+    state: 'queued' as const,
+    resumeAvailable: true,
+    cancelRequested: false,
+    error: undefined,
+    errorCode: undefined,
+    errorDiagnostics: undefined,
+    updatedAt: Date.now(),
+  };
   await saveAiClassificationJob(queued);
   if (!await ensureAiClassificationAlarm(queued)) {
     throw new Error('后台闹钟不可用，无法恢复 AI 分类任务');
@@ -444,6 +491,22 @@ export async function cancelAiClassificationJob(): Promise<AiClassificationJob |
   if (activeAiRun) {
     activeAiCancelRequested = true;
     if (activeAiController) activeAiController.abort();
+    // The user can cancel during the small window between START returning and
+    // the worker creating its AbortController. Persist a terminal cancelled
+    // state immediately in that window so the queued job cannot wake itself
+    // from its alarm after the run observes the cancellation flag.
+    if (!activeAiController) {
+      const cancelledBeforeController: AiClassificationJob = {
+        ...job,
+        state: 'cancelled',
+        cancelRequested: true,
+        resumeAvailable: true,
+        updatedAt: Date.now(),
+      };
+      await saveAiClassificationJob(cancelledBeforeController);
+      await clearAiClassificationAlarm(cancelledBeforeController.id);
+      return cancelledBeforeController;
+    }
     const requested = { ...job, cancelRequested: true, updatedAt: Date.now() };
     await saveAiClassificationJob(requested);
     return requested;
@@ -711,4 +774,3 @@ export async function saveAiClassificationJob(job: AiClassificationJob): Promise
   }
   await browser.storage.local.set({ [JOB_KEY]: job });
 }
-

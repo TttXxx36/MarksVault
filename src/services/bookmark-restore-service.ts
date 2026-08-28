@@ -878,4 +878,3 @@ export const markRestoreJournalsRecoverable = async (repository?: SnapshotReposi
 
 export const getRestorePlan = async (planId: string, repository?: SnapshotRepository): Promise<RestorePlan | null> =>
   (repository || getSnapshotRepository()).getPlan(planId);
-

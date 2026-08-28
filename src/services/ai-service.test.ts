@@ -274,6 +274,31 @@ describe('ai-service user-configured provider', () => {
     expect(result.assignments[0]).toEqual(expect.objectContaining({ categoryName: '开发' }));
   });
 
+  test('does not treat reasoning-only output as a classification response', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxAttempts: 1,
+    };
+    const reasoning = JSON.stringify({
+      categories: [{ name: '开发' }],
+      assignments: [{ bookmarkId: 'b1', categoryName: '开发', confidence: 0.9 }],
+    });
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        output: [{ type: 'reasoning', content: [{ type: 'output_text', text: reasoning }] }],
+      }),
+    });
+
+    await expect(classifyBookmarks(config, [{
+      id: 'b1', title: 'Example', url: 'https://example.com', path: '',
+    }])).rejects.toMatchObject({ code: 'UPSTREAM_FORMAT' });
+  });
+
   test('accepts fenced JSON, nested braces in strings, and compatible text response shapes', async () => {
     const config = {
       ...createDefaultAiProviderConfig(),
@@ -344,6 +369,88 @@ describe('ai-service user-configured provider', () => {
     expect((globalThis as any).fetch).toHaveBeenCalledTimes(2);
     await expect(classifyBookmarks(config, [])).resolves.toEqual({ categories: [], assignments: [] });
     expect(AiResponseFormatError).toBeDefined();
+  });
+
+  test('reports provider truncation metadata instead of a generic invalid JSON error', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxAttempts: 1,
+    };
+    const truncated = JSON.stringify({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output_text: '{"categories":[{"name":"开发"}],"assignments":',
+    });
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+      text: async () => truncated,
+    });
+
+    await expect(classifyBookmarks(config, [{
+      id: 'b1', title: 'Example', url: 'https://example.com', path: '',
+    }])).rejects.toMatchObject({
+      code: 'TRUNCATED_OUTPUT',
+      diagnostics: expect.objectContaining({
+        status: 200,
+        contentType: 'application/json',
+        incompleteReason: 'max_output_tokens',
+      }),
+    });
+  });
+
+  test('detects an SSE response before attempting JSON repair', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxAttempts: 1,
+    };
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: (name: string) => name.toLowerCase() === 'content-type' ? 'text/event-stream' : null },
+      text: async () => 'data: {"output_text":"{\\"categories\\":[],\\"assignments\\":[]}"}\\n\\n',
+    });
+
+    await expect(classifyBookmarks(config, [{
+      id: 'b1', title: 'Example', url: 'https://example.com', path: '',
+    }])).rejects.toMatchObject({
+      code: 'STREAMING_UNSUPPORTED',
+      diagnostics: expect.objectContaining({ contentType: 'text/event-stream' }),
+    });
+    expect((globalThis as any).fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('unwraps a single known data response envelope without accepting arbitrary extra JSON', async () => {
+    const config = {
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      maxAttempts: 1,
+    };
+    (globalThis as any).fetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => 'application/json' },
+      text: async () => JSON.stringify({ data: {
+        output_text: JSON.stringify({
+          categories: [{ name: '开发' }],
+          assignments: [{ bookmarkId: 'b1', categoryName: '开发', confidence: 0.9 }],
+        }),
+      } }),
+    });
+
+    const result = await classifyBookmarks(config, [{
+      id: 'b1', title: 'TypeScript', url: 'https://typescriptlang.org', path: '',
+    }]);
+    expect(result.assignments[0]).toEqual(expect.objectContaining({ categoryName: '开发' }));
   });
 
   test('rejects non-local HTTP endpoints', async () => {
@@ -485,6 +592,12 @@ describe('ai-service user-configured provider', () => {
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => JSON.stringify({ output_text: 'still-not-json' }) });
     const progress: any[] = [];
     await expect(classifyBookmarks(config, input, { onBatchProgress: item => { progress.push(item); } })).rejects.toThrow();
+    expect(progress.find(item => item.bookmarkIds.length === 20 && item.state === 'split')).toEqual(expect.objectContaining({
+      state: 'split',
+      childBatchIds: expect.arrayContaining([expect.any(String)]),
+    }));
+    expect(progress.filter(item => item.state === 'failed' && item.bookmarkIds.length === 10)).toHaveLength(1);
+    expect(progress.filter(item => item.bookmarkIds.length === 20).at(-1)?.state).toBe('split');
     const completedChild = progress.find(item => item.state === 'completed' && item.bookmarkIds.length === 10);
     expect(completedChild).toBeTruthy();
     const callsBeforeResume = (globalThis as any).fetch.mock.calls.length;
@@ -615,5 +728,57 @@ describe('ai-service user-configured provider', () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
-});
+  test('processes 400 synthetic bookmarks with one injected malformed parent response and resumes split children', async () => {
+    const attemptsByBatch = new Map<string, number>();
+    const fetchMock = jest.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      const userPrompt = String(body.input?.[1]?.content || body.messages?.[1]?.content || '');
+      const jsonl = userPrompt.split('输入书签 JSONL：\n')[1] || '';
+      const ids: string[] = [];
+      for (const line of jsonl.split('\n').filter(Boolean)) {
+        try {
+          ids.push(JSON.parse(line).id as string);
+        } catch {
+          break;
+        }
+      }
+      const batchKey = ids[0] || 'empty';
+      const attempt = (attemptsByBatch.get(batchKey) || 0) + 1;
+      attemptsByBatch.set(batchKey, attempt);
+      if (batchKey === 'b200' && attempt <= 2) {
+        return { ok: true, status: 200, text: async () => JSON.stringify({ output_text: 'not-json' }) };
+      }
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ output_text: JSON.stringify({
+          categories: [{ name: '其他' }],
+          assignments: ids.map((bookmarkId: string) => ({ bookmarkId, categoryName: '其他', confidence: 0.4 })),
+        }) }),
+      };
+    });
+    (globalThis as any).fetch = fetchMock;
+    const input = Array.from({ length: 400 }, (_, index) => ({
+      id: `b${index}`,
+      title: `Synthetic bookmark ${index}`,
+      url: `https://example.test/${index}`,
+      path: 'Bookmarks Bar / Synthetic',
+    }));
+    const progress: any[] = [];
+    const startedAt = Date.now();
+    const result = await classifyBookmarks({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'fixture-model',
+      maxAttempts: 1,
+      batchSize: 20,
+    }, input, { onBatchProgress: item => { progress.push(item); } });
+    expect(result.assignments).toHaveLength(400);
+    expect(progress.some(item => item.state === 'split' && item.bookmarkIds.length === 20)).toBe(true);
+    expect(progress.filter(item => item.state === 'completed' && item.bookmarkIds.length === 10)).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(23);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
 
+});

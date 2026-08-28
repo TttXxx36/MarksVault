@@ -266,4 +266,3 @@ export interface SnapshotImportValidationResult {
   contentHash?: string;
   computedHash?: string;
 }
-

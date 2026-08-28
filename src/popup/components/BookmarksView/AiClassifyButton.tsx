@@ -19,6 +19,7 @@ import Box from '@mui/material/Box';
 import { AiClassificationJob, AiClassificationPlan } from '../../../types/ai';
 import { applyAiClassificationPlan, getAiClassificationJob, getLastAiClassificationPlan, rollbackAiClassificationPlan } from '../../../services/ai-classification-service';
 import { getAiProviderConfig } from '../../../services/ai-service';
+import { buildAiDiagnosticsText, getAiErrorHint } from '../../../utils/ai-diagnostics';
 
 const isBackgroundJobState = (state: AiClassificationJob['state']): boolean => {
   return state === 'queued' || state === 'classifying' || state === 'paused' || state === 'applying' || state === 'failed' || state === 'cancelled';
@@ -33,6 +34,7 @@ const AiClassifyButton: React.FC = () => {
   const [providerOrigin, setProviderOrigin] = useState<string | null>(null);
   const [snapshotName, setSnapshotName] = useState('');
   const [clock, setClock] = useState(() => Date.now());
+  const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
 
   const loadPlan = async () => {
     const storedPlan = await getLastAiClassificationPlan();
@@ -100,6 +102,7 @@ const AiClassifyButton: React.FC = () => {
     setPlan(null);
     setSnapshotName('');
     setError(null);
+    setDiagnosticsCopied(false);
     try {
       const config = await getAiProviderConfig();
       setProviderOrigin(config.endpoint ? new URL(config.endpoint).origin : null);
@@ -156,6 +159,29 @@ const AiClassifyButton: React.FC = () => {
     }
   };
 
+  const startNew = async () => {
+    setBusy(true);
+    setError(null);
+    setPlan(null);
+    try {
+      setJob(await sendJobCommand('START_NEW_AI_CLASSIFICATION'));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '新建 AI 分类任务失败');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copyDiagnostics = async () => {
+    if (!job?.errorDiagnostics) return;
+    try {
+      await navigator.clipboard.writeText(buildAiDiagnosticsText(job));
+      setDiagnosticsCopied(true);
+    } catch {
+      setError('无法复制诊断信息，请检查浏览器剪贴板权限');
+    }
+  };
+
   const apply = async () => {
     if (!plan) return;
     setBusy(true);
@@ -200,11 +226,12 @@ const AiClassifyButton: React.FC = () => {
     if (!busy || (job && !plan)) setOpen(false);
   };
 
-  const completedCount = job?.batches.filter(batch => batch.state === 'completed')
+  const leafBatches = job?.batches.filter(batch => !batch.childBatchIds?.length) || [];
+  const completedCount = leafBatches.filter(batch => batch.state === 'completed')
     .reduce((total, batch) => total + batch.bookmarkIds.length, 0) || 0;
-  const failedCount = job?.batches.filter(batch => batch.state === 'failed')
+  const failedCount = leafBatches.filter(batch => batch.state === 'failed')
     .reduce((total, batch) => total + batch.bookmarkIds.length, 0) || 0;
-  const currentBatch = job?.batches.find(batch => batch.state === 'running') || job?.batches.find(batch => batch.state === 'failed');
+  const currentBatch = leafBatches.find(batch => batch.state === 'running') || leafBatches.find(batch => batch.state === 'failed');
   const totalCount = job?.bookmarks.length || job?.bookmarkIds.length || 0;
   const progressValue = totalCount ? Math.min(100, (completedCount / totalCount) * 100) : 0;
   const running = Boolean(job && (job.state === 'queued' || job.state === 'classifying'));
@@ -243,10 +270,23 @@ const AiClassifyButton: React.FC = () => {
               <Typography variant="caption" color="text.secondary">
                 目标服务：{providerOrigin || '未配置'}；{currentBatch ? `当前批次 ${currentBatch.bookmarkIds.length} 条，已尝试 ${currentBatch.attempts} 次，已耗时 ${Math.max(0, Math.floor((clock - (currentBatch.startedAt || clock)) / 1000))} 秒` : '等待下一批'}。
               </Typography>
-              {job.error && <Alert severity="warning">{job.error}</Alert>}
+              {job.error && (
+                <Alert severity="warning">
+                  {job.error}{job.errorCode ? `（${job.errorCode}）` : ''}
+                  {getAiErrorHint(job.errorCode) && ` ${getAiErrorHint(job.errorCode)}`}
+                </Alert>
+              )}
+              {job.errorDiagnostics && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                  <Button size="small" variant="text" onClick={copyDiagnostics}>复制脱敏诊断</Button>
+                  {diagnosticsCopied && <Typography variant="caption" color="text.secondary">已复制（不含 Key、提示词和书签内容）</Typography>}
+                </Box>
+              )}
               <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                {(job.state === 'paused' || job.state === 'cancelled') && <Button variant="contained" onClick={resume} disabled={busy}>继续分类</Button>}
+                {job.state === 'paused' && <Button variant="contained" onClick={resume} disabled={busy}>继续分类</Button>}
+                {job.state === 'cancelled' && <Button variant="contained" onClick={resume} disabled={busy}>继续未完成任务</Button>}
                 {job.state === 'failed' && <Button variant="contained" onClick={retry} disabled={busy}>重试失败批次</Button>}
+                {(job.state === 'cancelled' || job.state === 'failed') && <Button variant="outlined" onClick={startNew} disabled={busy}>新建分类任务</Button>}
                 {running && <Button variant="outlined" color="warning" onClick={cancel} disabled={busy}>取消任务</Button>}
               </Box>
             </Stack>
@@ -307,4 +347,3 @@ const AiClassifyButton: React.FC = () => {
 };
 
 export default AiClassifyButton;
-

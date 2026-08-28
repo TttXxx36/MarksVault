@@ -1583,6 +1583,9 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 4. 对当前批次只执行一次 JSON 修复请求。修复请求只包含该批次的原始输入和格式要求，不携带 API Key 到提示词。
 5. 修复仍失败时将批次标为 `failed`，保留已完成批次，并按 HOT-003 的拆分策略处理；不得把不确定结果写入书签。
 6. 错误摘要只包含协议、阶段、批次 ID、书签数量、响应类型和安全截断的错误信息；不得包含 API Key，默认不包含完整书签内容。
+7. 对 `finish_reason=length`、`incomplete_details.reason=max_output_tokens`、`text/event-stream`、已知响应包装和错误包装分别返回可行动的结构化错误；不能把它们全部归并为“无效 JSON”。
+8. 自适应拆分后父批次标记为 `split`，只统计叶子子批次的成功/失败数量；父批次不得继续显示为正在处理，也不得与子批次重复计数。
+9. 任务页面可由用户主动复制脱敏诊断摘要；摘要只包含协议、状态码、Content-Type、响应长度、响应形态和结束原因。
 
 必须加入的 fixture：
 
@@ -1616,7 +1619,7 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 推荐结构：
 
 - Popup 只负责创建/查看/确认任务，不持有长时间分类 Promise。
-- `src/entrypoints/background.ts` 增加 AI 任务消息处理：`START_AI_CLASSIFICATION`、`GET_AI_CLASSIFICATION_JOB`、`RESUME_AI_CLASSIFICATION`、`CANCEL_AI_CLASSIFICATION`、`RETRY_AI_BATCH`、`GET_AI_PREVIEW`。
+- `src/entrypoints/background.ts` 增加 AI 任务消息处理：`START_AI_CLASSIFICATION`、`START_NEW_AI_CLASSIFICATION`、`GET_AI_CLASSIFICATION_JOB`、`RESUME_AI_CLASSIFICATION`、`CANCEL_AI_CLASSIFICATION`、`RETRY_AI_BATCH`、`GET_AI_PREVIEW`。
 - 后台每次只处理一个批次，批次开始前和完成/失败后都写入持久状态；不要依赖一个跨几十个批次的长 Promise。
 - 使用浏览器支持的后台唤醒机制（消息事件和 alarms）推进下一批；Service Worker 被回收后可以从最后一个已落盘批次恢复。
 - 使用任务租约保证同一时间只有一个活动 AI 分类任务；重复点击只打开已有任务，不创建并行任务。
@@ -1651,6 +1654,7 @@ MarksVault 达到以下状态时，本计划才算全部完成：
 - 页面显示总书签数、已完成数、失败数、当前批次、重试次数、目标服务域名和下一步操作。
 - 关闭 Popup 不取消任务；Popup 重开时通过 `storage.onChanged` 和一次性读取恢复视图。
 - 取消按钮只设置取消请求，在当前 API 请求结束、状态落盘后停止。
+- 取消完成后保留已完成批次和任务草稿；用户可以继续未完成任务，也可以在修改 AI 配置后点击“新建分类任务”创建全新的任务，不能静默覆盖旧任务。
 - 预览草稿可以重新打开、编辑分类名称和确认执行；关闭窗口不能使预览丢失。
 - 同一时间只能有一个活动任务；已有活动任务时点击 AI 图标直接进入任务详情。
 

@@ -250,6 +250,16 @@ export default defineBackground({
         return true;
       }
 
+      if (message.type === 'START_NEW_AI_CLASSIFICATION') {
+        void (async () => {
+          const job = await startAiClassificationJob(undefined, { forceNew: true });
+          return { success: true, job };
+        })()
+          .then(response => sendResponse(response))
+          .catch(respondError);
+        return true;
+      }
+
       if (message.type === 'GET_AI_CLASSIFICATION_JOB') {
         // Reading task state must be side-effect free. Recovery is performed
         // during worker/browser startup, not when a Popup is reopened.

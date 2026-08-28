@@ -8,4 +8,3 @@ describe('AI classification task status labels', () => {
     expect(getAiClassificationJobStatusLabel('classifying')).toBe('后台处理中');
   });
 });
-

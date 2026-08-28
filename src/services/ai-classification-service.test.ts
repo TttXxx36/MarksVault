@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { AiClassificationPlan } from '../types/ai';
-import { applyAiClassificationPlan, clearAiClassificationAlarm, ensureAiClassificationAlarm, recoverAiClassificationOnWorkerStart, rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
+import { applyAiClassificationPlan, cancelAiClassificationJob, clearAiClassificationAlarm, ensureAiClassificationAlarm, recoverAiClassificationOnWorkerStart, rollbackAiClassificationPlan, runAiClassificationJob, startAiClassificationJob, getAiClassificationJob, markAiClassificationRecoverable, saveAiClassificationJob } from './ai-classification-service';
 import { createDefaultAiProviderConfig, saveAiProviderConfig } from './ai-service';
 import { MemorySnapshotRepository, setSnapshotRepositoryForTesting } from './bookmark-snapshot-service';
 
@@ -376,5 +376,114 @@ describe('ai-classification rollback safety', () => {
     await expect(runAiClassificationJob()).rejects.toThrow('没有可执行的 AI 分类任务');
     await expect(runAiClassificationJob()).rejects.toThrow('没有可执行的 AI 分类任务');
   });
-});
 
+  test('cancels an active AI request, clears its alarm, and never resumes automatically', async () => {
+    bookmarks.getTree = jest.fn().mockResolvedValue([{
+      id: 'root',
+      title: '',
+      children: [{
+        id: 'toolbar',
+        title: 'Bookmarks Toolbar',
+        children: [{ id: 'b1', title: 'Example', url: 'https://example.com', parentId: 'toolbar', index: 0 }],
+      }],
+    }]);
+    await saveAiProviderConfig({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'slow-model',
+      apiKey: 'fake-secret',
+      batchSize: 10,
+      timeoutMs: 120_000,
+      batchTimeoutMs: 120_000,
+    });
+    let aborted = false;
+    (globalThis as any).fetch = jest.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => {
+        aborted = true;
+        reject(new DOMException('Aborted', 'AbortError'));
+      }, { once: true });
+    }));
+
+    await startAiClassificationJob();
+    for (let attempt = 0; attempt < 20 && !(globalThis as any).fetch.mock.calls.length; attempt += 1) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const requested = await cancelAiClassificationJob();
+    expect(requested).toEqual(expect.objectContaining({ cancelRequested: true }));
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await getAiClassificationJob();
+      if (current?.state === 'cancelled') break;
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    const cancelled = await getAiClassificationJob();
+    expect(aborted).toBe(true);
+    expect(cancelled).toEqual(expect.objectContaining({ state: 'cancelled', resumeAvailable: false }));
+    expect(alarms.clear).toHaveBeenCalledWith(expect.stringMatching(/^marksvault-ai-/));
+  });
+
+  test('cancels during the startup race before an AbortController exists', async () => {
+    const job: any = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'cancel-race-job',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'queued',
+    };
+    await saveAiClassificationJob(job);
+    bookmarks.getTree = jest.fn().mockResolvedValue([{ id: 'root', title: '', children: [] }]);
+    // Keep a pending active run while leaving activeAiController unset by
+    // invoking the cancellation path immediately after the task is accepted.
+    const pendingStart = startAiClassificationJob({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      apiKey: 'fake-secret',
+    });
+    const cancelled = await cancelAiClassificationJob();
+    await pendingStart;
+    expect(cancelled).toEqual(expect.objectContaining({ state: 'cancelled', cancelRequested: true }));
+    expect(await getAiClassificationJob()).toEqual(expect.objectContaining({ state: 'cancelled' }));
+  });
+
+  test('allows an explicit new classification after cancellation without reusing the cancelled job', async () => {
+    const cancelled = {
+      schemaVersion: 1,
+      promptContractVersion: 1,
+      id: 'cancelled-job',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      bookmarkIds: [],
+      bookmarks: [],
+      batches: [],
+      categories: [],
+      assignments: [],
+      state: 'cancelled' as const,
+      cancelRequested: true,
+      resumeAvailable: false,
+    };
+    await saveAiClassificationJob(cancelled as any);
+    bookmarks.getTree = jest.fn().mockResolvedValue([{ id: 'root', title: '', children: [] }]);
+    const fresh = await startAiClassificationJob({
+      ...createDefaultAiProviderConfig(),
+      enabled: true,
+      endpoint: 'https://example.com',
+      model: 'demo-model',
+      apiKey: 'fake-secret',
+      systemPrompt: '新的补充要求',
+    }, { forceNew: true });
+    expect(fresh.id).not.toBe(cancelled.id);
+    expect(fresh.state).toBe('queued');
+  });
+});

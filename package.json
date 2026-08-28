@@ -1,6 +1,6 @@
 {
   "name": "marksvault",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "description": "智能管理、整理和安全备份您的书签数据",
   "author": "TttXxx36",
   "repository": {
@@ -56,4 +56,3 @@
     "typescript": "^5.0.4"
   }
 }
-

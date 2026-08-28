@@ -52,7 +52,18 @@ export interface AiClassificationResponse {
   assignments: AiAssignment[];
 }
 
-export type AiBatchState = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+/** Safe, bounded metadata retained for diagnosing provider response failures. */
+export interface AiResponseDiagnostics {
+  protocol: AiProtocol;
+  status?: number;
+  contentType?: string;
+  responseChars?: number;
+  responseShape?: string;
+  finishReason?: string;
+  incompleteReason?: string;
+}
+
+export type AiBatchState = 'pending' | 'running' | 'split' | 'completed' | 'failed' | 'cancelled';
 
 export type AiClassificationJobState =
   | 'queued'
@@ -73,6 +84,9 @@ export interface AiBatchProgress {
   attempts: number;
   errorCode?: string;
   splitDepth?: number;
+  parentBatchId?: string;
+  childBatchIds?: string[];
+  diagnostics?: AiResponseDiagnostics;
   startedAt?: number;
   completedAt?: number;
   error?: string;
@@ -98,6 +112,7 @@ export interface AiClassificationJob {
   cancelRequested?: boolean;
   resumeAvailable?: boolean;
   errorCode?: string;
+  errorDiagnostics?: AiResponseDiagnostics;
   error?: string;
 }
 
@@ -124,4 +139,3 @@ export interface AiClassificationPlan {
   preSnapshotId?: string;
   state: 'preview' | 'applying' | 'applied' | 'rolled_back';
 }
-

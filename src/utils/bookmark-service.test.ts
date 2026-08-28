@@ -44,4 +44,3 @@ describe('bookmark-service Firefox node compatibility', () => {
     expect(getBookmarkNodeType({ id: 'folder-1', title: '学习' } as never)).toBe('folder');
   });
 });
-

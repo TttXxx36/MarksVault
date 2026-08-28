@@ -285,4 +285,3 @@ const SnapshotHistoryCard: React.FC<SnapshotHistoryCardProps> = ({ compact = fal
 };
 
 export default SnapshotHistoryCard;
-
